@@ -1,0 +1,286 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+
+	"github.com/antoinerospars/mcp-audit/internal/audit"
+	"github.com/antoinerospars/mcp-audit/internal/audit/storage"
+	"github.com/antoinerospars/mcp-audit/internal/dashboard"
+	"github.com/antoinerospars/mcp-audit/internal/middleware"
+	"github.com/antoinerospars/mcp-audit/internal/proxy"
+	"github.com/spf13/viper"
+)
+
+type appConfig struct {
+	Proxy struct {
+		Transport string `mapstructure:"transport"`
+		Upstream  string `mapstructure:"upstream"`
+		Port      int    `mapstructure:"port"`
+		ClientID  string `mapstructure:"client_id"`
+		ServerID  string `mapstructure:"server_id"`
+	} `mapstructure:"proxy"`
+	Audit struct {
+		Storage    string `mapstructure:"storage"`
+		Path       string `mapstructure:"path"`
+		SQLitePath string `mapstructure:"sqlite_path"`
+		Sign       bool   `mapstructure:"sign"`
+		Secret     string `mapstructure:"secret"`
+	} `mapstructure:"audit"`
+	Middleware struct {
+		RateLimit struct {
+			Enabled           bool `mapstructure:"enabled"`
+			RequestsPerMinute int  `mapstructure:"requests_per_minute"`
+		} `mapstructure:"rate_limit"`
+		Redact struct {
+			Enabled  bool     `mapstructure:"enabled"`
+			Patterns []string `mapstructure:"patterns"`
+		} `mapstructure:"redact"`
+	} `mapstructure:"middleware"`
+	Dashboard struct {
+		Enabled bool `mapstructure:"enabled"`
+		Port    int  `mapstructure:"port"`
+	} `mapstructure:"dashboard"`
+}
+
+type cliFlags struct {
+	config      string
+	transport   string
+	upstream    string
+	port        int
+	storage     string
+	noDashboard bool
+	logLevel    string
+	set         map[string]bool
+}
+
+func main() {
+	flags := parseFlags()
+	logger := newLogger(flags.logLevel)
+	config, err := loadConfig(flags)
+	if err != nil {
+		logger.Error("failed to load config", "error", err)
+		os.Exit(1)
+	}
+	logger = newLogger(configuredLogLevel(flags))
+
+	store, err := openStore(config)
+	if err != nil {
+		logger.Error("failed to open audit store", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			logger.Error("failed to close audit store", "error", err)
+		}
+	}()
+
+	secret := config.Audit.Secret
+	if envSecret := os.Getenv("AUDIT_SECRET"); envSecret != "" {
+		secret = envSecret
+	}
+	var signer *audit.Signer
+	if config.Audit.Sign {
+		signer = audit.NewSigner(secret)
+	}
+	redactor := middleware.NewRedactor(config.Middleware.Redact.Enabled, config.Middleware.Redact.Patterns)
+	auditLogger := audit.NewLogger(audit.LoggerConfig{
+		Store:     store,
+		Signer:    signer,
+		Redactor:  redactor,
+		Log:       logger,
+		Transport: config.Proxy.Transport,
+		ClientID:  config.Proxy.ClientID,
+		ServerID:  config.Proxy.ServerID,
+	})
+	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errs := make(chan error, 2)
+	if config.Dashboard.Enabled {
+		server := dashboard.NewServer(dashboard.Config{
+			Enabled: true,
+			Port:    config.Dashboard.Port,
+			Store:   store,
+			Log:     logger,
+		})
+		go func() {
+			errs <- server.ListenAndServe(ctx)
+		}()
+		logger.Info("dashboard listening", "port", config.Dashboard.Port)
+	}
+
+	switch config.Proxy.Transport {
+	case "stdio":
+		stdio := proxy.NewStdioProxy(proxy.StdioConfig{
+			Upstream: config.Proxy.Upstream,
+			Audit:    auditLogger,
+			Limiter:  limiter,
+			Log:      logger,
+			ClientID: config.Proxy.ClientID,
+			ServerID: config.Proxy.ServerID,
+		})
+		err = stdio.Run(ctx)
+	case "http":
+		httpProxy, err := proxy.NewHTTPProxy(proxy.HTTPConfig{
+			Upstream: config.Proxy.Upstream,
+			Port:     config.Proxy.Port,
+			Audit:    auditLogger,
+			Limiter:  limiter,
+			Log:      logger,
+			ClientID: config.Proxy.ClientID,
+			ServerID: config.Proxy.ServerID,
+		})
+		if err != nil {
+			logger.Error("failed to create http proxy", "error", err)
+			os.Exit(1)
+		}
+		logger.Info("http proxy listening", "port", config.Proxy.Port, "upstream", config.Proxy.Upstream)
+		err = httpProxy.ListenAndServe(ctx)
+	default:
+		err = fmt.Errorf("main: unknown transport %q", config.Proxy.Transport)
+	}
+	stop()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		logger.Error("proxy stopped with error", "error", err)
+		os.Exit(1)
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			logger.Error("background server stopped with error", "error", err)
+			os.Exit(1)
+		}
+	default:
+	}
+}
+
+func parseFlags() cliFlags {
+	flags := cliFlags{set: make(map[string]bool)}
+	flag.StringVar(&flags.config, "config", "./config.yaml", "path to config.yaml")
+	flag.StringVar(&flags.transport, "transport", "", "stdio or http")
+	flag.StringVar(&flags.upstream, "upstream", "", "upstream server command or URL")
+	flag.IntVar(&flags.port, "port", 0, "proxy port for http mode")
+	flag.StringVar(&flags.storage, "storage", "", "jsonl or sqlite")
+	flag.BoolVar(&flags.noDashboard, "no-dashboard", false, "disable dashboard")
+	flag.StringVar(&flags.logLevel, "log-level", "info", "debug, info, warn, or error")
+	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		flags.set[f.Name] = true
+	})
+	return flags
+}
+
+func loadConfig(flags cliFlags) (appConfig, error) {
+	v := viper.New()
+	setDefaults(v)
+	v.SetConfigFile(flags.config)
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+	if err := v.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &notFound) && !os.IsNotExist(err) {
+			return appConfig{}, fmt.Errorf("main: read config: %w", err)
+		}
+	}
+	applyFlagOverrides(v, flags)
+	var config appConfig
+	if err := v.Unmarshal(&config); err != nil {
+		return appConfig{}, fmt.Errorf("main: decode config: %w", err)
+	}
+	return config, validateConfig(config)
+}
+
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("proxy.transport", "stdio")
+	v.SetDefault("proxy.port", 4422)
+	v.SetDefault("proxy.client_id", "claude-desktop")
+	v.SetDefault("proxy.server_id", "filesystem")
+	v.SetDefault("audit.storage", "jsonl")
+	v.SetDefault("audit.path", "./audit.jsonl")
+	v.SetDefault("audit.sqlite_path", "./audit.db")
+	v.SetDefault("audit.sign", true)
+	v.SetDefault("middleware.rate_limit.enabled", true)
+	v.SetDefault("middleware.rate_limit.requests_per_minute", 60)
+	v.SetDefault("middleware.redact.enabled", true)
+	v.SetDefault("middleware.redact.patterns", middleware.DefaultRedactPatterns)
+	v.SetDefault("dashboard.enabled", true)
+	v.SetDefault("dashboard.port", 9090)
+}
+
+func applyFlagOverrides(v *viper.Viper, flags cliFlags) {
+	if flags.set["transport"] {
+		v.Set("proxy.transport", flags.transport)
+	}
+	if flags.set["upstream"] {
+		v.Set("proxy.upstream", flags.upstream)
+	}
+	if flags.set["port"] {
+		v.Set("proxy.port", flags.port)
+	}
+	if flags.set["storage"] {
+		v.Set("audit.storage", flags.storage)
+	}
+	if flags.set["no-dashboard"] && flags.noDashboard {
+		v.Set("dashboard.enabled", false)
+	}
+}
+
+func validateConfig(config appConfig) error {
+	switch config.Proxy.Transport {
+	case "stdio", "http":
+	default:
+		return fmt.Errorf("main: proxy.transport must be stdio or http")
+	}
+	if config.Proxy.Upstream == "" {
+		return fmt.Errorf("main: proxy.upstream is required")
+	}
+	switch config.Audit.Storage {
+	case "jsonl", "sqlite":
+	default:
+		return fmt.Errorf("main: audit.storage must be jsonl or sqlite")
+	}
+	return nil
+}
+
+func openStore(config appConfig) (audit.Store, error) {
+	switch config.Audit.Storage {
+	case "jsonl":
+		return storage.NewJSONLStore(config.Audit.Path)
+	case "sqlite":
+		return storage.NewSQLiteStore(config.Audit.SQLitePath)
+	default:
+		return nil, fmt.Errorf("main: unknown storage backend %q", config.Audit.Storage)
+	}
+}
+
+func newLogger(level string) *slog.Logger {
+	var slogLevel slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		slogLevel = slog.LevelDebug
+	case "warn":
+		slogLevel = slog.LevelWarn
+	case "error":
+		slogLevel = slog.LevelError
+	default:
+		slogLevel = slog.LevelInfo
+	}
+	return slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slogLevel}))
+}
+
+func configuredLogLevel(flags cliFlags) string {
+	if flags.logLevel == "" {
+		return "info"
+	}
+	return flags.logLevel
+}

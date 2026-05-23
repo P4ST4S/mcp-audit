@@ -1,0 +1,31 @@
+proxy:
+  transport: stdio
+  upstream: "npx @modelcontextprotocol/server-filesystem /tmp"
+  port: 4422
+  client_id: "claude-desktop"
+  server_id: "filesystem"
+
+audit:
+  storage: jsonl
+  path: ./audit.jsonl
+  sqlite_path: ./audit.db
+  sign: true
+  secret: ""
+
+middleware:
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+  redact:
+    enabled: true
+    patterns:
+      - password
+      - token
+      - secret
+      - api_key
+      - bearer
+      - authorization
+
+dashboard:
+  enabled: true
+  port: 9090
