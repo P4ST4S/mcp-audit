@@ -110,9 +110,9 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 }
 ```
 
-## Dashboard
+## Demo
 
-The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
+![mcp-audit demo](demo/mcp-audit-demo.gif)
 
 ## Audit Entries
 

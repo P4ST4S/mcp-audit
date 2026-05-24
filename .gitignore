@@ -37,3 +37,10 @@ go.work.sum
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Build output
+mcp-audit
+
+# Audit data
+audit.jsonl
+audit.db

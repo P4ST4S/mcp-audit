@@ -1,0 +1,2 @@
+{"id":"01HZ3K2X1Y0000000000000001","timestamp":"2026-05-24T14:32:01.123Z","direction":"client→server","transport":"stdio","method":"tools/list","tool_name":"","duration_ms":4,"client_id":"claude-desktop","server_id":"filesystem","signature":"hmac-sha256:a3f9c2e1"}
+{"id":"01HZ3K2X1Y0000000000000002","timestamp":"2026-05-24T14:32:03.456Z","direction":"client→server","transport":"stdio","method":"tools/call","tool_name":"read_file","duration_ms":12,"client_id":"claude-desktop","server_id":"filesystem","signature":"hmac-sha256:b7d4e8f2"}
