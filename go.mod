@@ -1,4 +1,4 @@
-module github.com/antoinerospars/mcp-audit
+module github.com/P4ST4S/mcp-audit
 
 go 1.22
 

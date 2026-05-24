@@ -11,11 +11,11 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/antoinerospars/mcp-audit/internal/audit"
-	"github.com/antoinerospars/mcp-audit/internal/audit/storage"
-	"github.com/antoinerospars/mcp-audit/internal/dashboard"
-	"github.com/antoinerospars/mcp-audit/internal/middleware"
-	"github.com/antoinerospars/mcp-audit/internal/proxy"
+	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
+	"github.com/P4ST4S/mcp-audit/internal/dashboard"
+	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/proxy"
 	"github.com/spf13/viper"
 )
 

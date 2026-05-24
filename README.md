@@ -28,7 +28,7 @@ Install Go, then build from source:
 
 ```bash
 brew install go
-go install github.com/antoinerospars/mcp-audit/cmd/mcp-audit@latest
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@latest
 ```
 
 Run in stdio mode:
@@ -113,8 +113,6 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 ## Dashboard
 
 The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
-
-![Dashboard placeholder](docs/dashboard.png)
 
 ## Audit Entries
 

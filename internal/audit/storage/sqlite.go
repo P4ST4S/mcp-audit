@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/antoinerospars/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit"
 	_ "modernc.org/sqlite"
 )
 

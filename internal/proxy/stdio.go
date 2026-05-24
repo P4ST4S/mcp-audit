@@ -12,8 +12,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antoinerospars/mcp-audit/internal/audit"
-	"github.com/antoinerospars/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/middleware"
+)
+
+const (
+	pendingCallTTL                  = 30 * time.Second
+	pendingCallCleanupInterval      = 5 * time.Second
+	upstreamGracefulShutdownTimeout = 5 * time.Second
+	upstreamPipeDrainTimeout        = 1 * time.Second
 )
 
 // StdioConfig configures a stdio MCP proxy.
@@ -47,7 +54,11 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 	if p.config.Upstream == "" {
 		return fmt.Errorf("proxy: stdio: upstream is required")
 	}
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", p.config.Upstream)
+	cleanupCtx, stopCleanup := context.WithCancel(ctx)
+	defer stopCleanup()
+	go p.state.cleanupLoop(cleanupCtx, pendingCallTTL, pendingCallCleanupInterval)
+
+	cmd := exec.Command("/bin/sh", "-c", p.config.Upstream)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("proxy: stdio: stdin pipe: %w", err)
@@ -78,21 +89,55 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 	go func() {
 		waitErr <- cmd.Wait()
 	}()
+	pipesDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(pipesDone)
+	}()
 
 	select {
 	case <-ctx.Done():
-		_ = cmd.Process.Kill()
-		wg.Wait()
-		if err := <-waitErr; err != nil && ctx.Err() == nil {
-			return fmt.Errorf("proxy: stdio: wait: %w", err)
-		}
+		_ = p.shutdownUpstream(cmd, waitErr)
+		p.waitForPipes(pipesDone)
 		return nil
 	case err := <-waitErr:
-		wg.Wait()
+		p.waitForPipes(pipesDone)
 		if err != nil {
 			return fmt.Errorf("proxy: stdio: wait: %w", err)
 		}
 		return nil
+	}
+}
+
+func (p *StdioProxy) shutdownUpstream(cmd *exec.Cmd, waitErr <-chan error) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		p.log.Warn("failed to interrupt upstream; killing", "error", err)
+		_ = cmd.Process.Kill()
+		return <-waitErr
+	}
+
+	timer := time.NewTimer(upstreamGracefulShutdownTimeout)
+	defer timer.Stop()
+	select {
+	case err := <-waitErr:
+		return err
+	case <-timer.C:
+		p.log.Warn("upstream did not exit after interrupt; killing", "timeout", upstreamGracefulShutdownTimeout)
+		_ = cmd.Process.Kill()
+		return <-waitErr
+	}
+}
+
+func (p *StdioProxy) waitForPipes(pipesDone <-chan struct{}) {
+	timer := time.NewTimer(upstreamPipeDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-pipesDone:
+	case <-timer.C:
+		p.log.Debug("stdio pipe goroutines still draining")
 	}
 }
 
@@ -266,6 +311,45 @@ func newRPCState() *rpcState {
 		clientPending: make(map[string]pendingCall),
 		serverPending: make(map[string]pendingCall),
 	}
+}
+
+func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	if interval <= 0 {
+		interval = ttl
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			s.purgeExpired(now, ttl)
+		}
+	}
+}
+
+func (s *rpcState) purgeExpired(now time.Time, ttl time.Duration) int {
+	cutoff := now.Add(-ttl)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	purged := 0
+	for id, call := range s.clientPending {
+		if call.startedAt.Before(cutoff) {
+			delete(s.clientPending, id)
+			purged++
+		}
+	}
+	for id, call := range s.serverPending {
+		if call.startedAt.Before(cutoff) {
+			delete(s.serverPending, id)
+			purged++
+		}
+	}
+	return purged
 }
 
 func (s *rpcState) rememberClient(id string, call pendingCall) {

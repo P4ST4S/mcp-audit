@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/antoinerospars/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit"
 )
 
 // JSONLStore appends audit entries as one JSON document per line.
