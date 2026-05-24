@@ -1,0 +1,14 @@
+{
+  "name": "io.github.p4st4s/mcp-audit",
+  "description": "Transparent Go proxy that intercepts, signs, rate-limits, redacts, and audits all MCP JSON-RPC tool calls without modifying client or server.",
+  "repository": "https://github.com/P4ST4S/mcp-audit",
+  "license": "Apache-2.0",
+  "packages": [
+    {
+      "registry": "go",
+      "name": "github.com/P4ST4S/mcp-audit",
+      "version": "latest"
+    }
+  ],
+  "categories": ["security", "devtools", "proxy"]
+}
