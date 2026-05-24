@@ -22,6 +22,10 @@ The MCP 2026 roadmap calls out enterprise needs around audit trails, gateway pat
                                            Read-only dashboard
 ```
 
+## Demo
+
+![mcp-audit demo](demo/mcp-audit-demo.gif)
+
 ## Quick Start
 
 Install Go, then build from source:
@@ -110,9 +114,9 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 }
 ```
 
-## Demo
+## Dashboard
 
-![mcp-audit demo](demo/mcp-audit-demo.gif)
+The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
 
 ## Audit Entries
 
