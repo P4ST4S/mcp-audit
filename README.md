@@ -11,15 +11,15 @@ A transparent Go proxy that intercepts, signs, rate-limits, redacts, and audits 
 The MCP 2026 roadmap calls out enterprise needs around audit trails, gateway patterns, and operational visibility. `mcp-audit` fills that gap as a deployable sidecar or local wrapper: it sits between any MCP client and server, preserves protocol traffic, and records signed audit entries for tool calls, resource reads, prompt requests, and all other JSON-RPC methods.
 
 ```text
-+-------------+      JSON-RPC / MCP       +-----------+      JSON-RPC / MCP       +-------------+
-| MCP client  | <-----------------------> | mcp-audit | <-----------------------> | MCP server  |
-+-------------+                           +-----------+                           +-------------+
-                                                    |
-                                                    v
-                                      JSONL or SQLite audit log
-                                                    |
-                                                    v
-                                           Read-only dashboard
++-------------+    JSON-RPC / MCP     +-----------+      JSON-RPC / MCP     +-------------+
+| MCP client  | <-------------------> | mcp-audit | <---------------------> | MCP server  |
++-------------+                       +-----------+                         +-------------+
+                                            |
+                                            v
+                                JSONL or SQLite audit log
+                                            |
+                                            v
+                                   Read-only dashboard
 ```
 
 ## Demo
