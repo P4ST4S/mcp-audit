@@ -39,7 +39,7 @@ go.work.sum
 Thumbs.db
 
 # Build output
-mcp-audit
+/mcp-audit
 
 # Audit data
 audit.jsonl
