@@ -133,7 +133,7 @@ id + timestamp + method + tool_name + raw_params
 
 This project is experimental. Keep changes small, run `go build ./...` and `go vet ./...`, and prefer standard library behavior over new dependencies.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project principles.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project principles. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
