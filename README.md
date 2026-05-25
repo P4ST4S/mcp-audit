@@ -24,11 +24,16 @@ The MCP 2026 roadmap calls out enterprise needs around audit trails, gateway pat
                                    Read-only dashboard
 ```
 
-## What This Is
+## What This Is / Is Not
 
 `mcp-audit` is not a domain-specific MCP server. It is a transparent security and observability proxy that wraps any MCP server and audits the JSON-RPC traffic passing through it.
 
 Directories may show the tools exposed by the upstream server, not tools implemented by `mcp-audit` itself.
+
+## Supported Transports
+
+- `stdio` for local MCP clients such as Claude Desktop
+- `http` for MCP servers exposed over HTTP
 
 ## Use Cases
 
@@ -144,7 +149,7 @@ Example JSONL entry:
 {
   "id": "01HY8G6Y8S6W9K6ZD7VJ4Q8X4R",
   "timestamp": "2026-05-25T12:34:56Z",
-  "direction": "client→server",
+  "direction": "client_to_server",
   "transport": "stdio",
   "method": "tools/call",
   "tool_name": "read_file",
@@ -154,10 +159,11 @@ Example JSONL entry:
       "path": "/tmp/example.txt"
     }
   },
+  "redacted_fields": ["params.arguments.token"],
   "duration_ms": 18,
   "client_id": "claude-desktop",
   "server_id": "filesystem",
-  "signature": "hmac-sha256..."
+  "signature": "hmac-sha256:..."
 }
 ```
 
@@ -169,11 +175,11 @@ id + timestamp + method + tool_name + raw_params
 
 ## Roadmap
 
-- Async write pipeline for high-throughput audit logging
-- OpenTelemetry export
 - Prometheus metrics
+- OpenTelemetry export
 - Policy engine for allow/deny rules
 - SIEM-friendly exports
+- Async write pipeline for high-throughput audit logging
 
 ## Contributing
 
