@@ -1,0 +1,22 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": [
+    "P4ST4S"
+  ],
+  "environmentVariables": {
+    "schema": {
+      "type": "object",
+      "properties": {
+        "AUDIT_SECRET": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional HMAC-SHA256 signing secret for audit entries"
+        }
+      },
+      "additionalProperties": false
+    },
+    "placeholderArguments": [
+      "AUDIT_SECRET"
+    ]
+  }
+}
