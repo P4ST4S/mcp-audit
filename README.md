@@ -10,7 +10,7 @@ A drop-in security and observability proxy for MCP servers. `mcp-audit` sits bet
 
 ## Why mcp-audit?
 
-The MCP 2026 roadmap calls out enterprise needs around audit trails, gateway patterns, and operational visibility. `mcp-audit` fills that gap as a deployable sidecar or local wrapper: it sits between any MCP client and server, preserves protocol traffic, and records signed audit entries for tool calls, resource reads, prompt requests, and all other JSON-RPC methods.
+[The MCP 2026 roadmap](https://modelcontextprotocol.io/development/roadmap) calls out enterprise needs around audit trails, gateway patterns, and operational visibility. `mcp-audit` fills that gap as a deployable sidecar or local wrapper: it sits between any MCP client and server, preserves protocol traffic, and records signed audit entries for tool calls, resource reads, prompt requests, and all other JSON-RPC methods.
 
 ```text
 +-------------+    JSON-RPC / MCP     +-----------+      JSON-RPC / MCP     +-------------+
@@ -156,10 +156,10 @@ Example JSONL entry:
   "params": {
     "name": "read_file",
     "arguments": {
-      "path": "/tmp/example.txt"
+      "path": "/tmp/example.txt",
+      "token": "[REDACTED]"
     }
   },
-  "redacted_fields": ["params.arguments.token"],
   "duration_ms": 18,
   "client_id": "claude-desktop",
   "server_id": "filesystem",
