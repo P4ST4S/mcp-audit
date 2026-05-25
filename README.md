@@ -1,6 +1,7 @@
 # mcp-audit
 
 ![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)
+[![CI](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 ![Status](https://img.shields.io/badge/Status-experimental-orange)
 
