@@ -32,7 +32,7 @@ Install Go, then build from source:
 
 ```bash
 brew install go
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@latest
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.1.0
 ```
 
 Run in stdio mode:
