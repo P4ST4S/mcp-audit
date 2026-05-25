@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 ![Status](https://img.shields.io/badge/Status-experimental-orange)
 
-A transparent Go proxy that intercepts, signs, rate-limits, redacts, and audits MCP JSON-RPC traffic without changing the client or server.
+A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce per-tool rate limits, and expose a local read-only dashboard.
 
 ## Why mcp-audit?
 
@@ -23,6 +23,20 @@ The MCP 2026 roadmap calls out enterprise needs around audit trails, gateway pat
                                             v
                                    Read-only dashboard
 ```
+
+## What This Is
+
+`mcp-audit` is not a domain-specific MCP server. It is a transparent security and observability proxy that wraps any MCP server and audits the JSON-RPC traffic passing through it.
+
+Directories may show the tools exposed by the upstream server, not tools implemented by `mcp-audit` itself.
+
+## Use Cases
+
+- Audit tool calls made by AI agents in regulated environments
+- Detect unexpected or dangerous MCP tool usage
+- Keep signed JSONL or SQLite logs for incident review
+- Redact sensitive fields before storing requests and responses
+- Apply per-tool rate limits without modifying the upstream MCP server
 
 ## Demo
 
@@ -124,11 +138,42 @@ The dashboard shows recent entries, filters, expandable request/result JSON, top
 
 Each stored entry includes a ULID, timestamp, direction, transport, JSON-RPC method, tool name when present, redacted params/result, JSON-RPC error when present, duration, client/server identifiers, and an optional HMAC-SHA256 signature.
 
+Example JSONL entry:
+
+```json
+{
+  "id": "01HY8G6Y8S6W9K6ZD7VJ4Q8X4R",
+  "timestamp": "2026-05-25T12:34:56Z",
+  "direction": "client→server",
+  "transport": "stdio",
+  "method": "tools/call",
+  "tool_name": "read_file",
+  "params": {
+    "name": "read_file",
+    "arguments": {
+      "path": "/tmp/example.txt"
+    }
+  },
+  "duration_ms": 18,
+  "client_id": "claude-desktop",
+  "server_id": "filesystem",
+  "signature": "hmac-sha256..."
+}
+```
+
 The signature covers:
 
 ```text
 id + timestamp + method + tool_name + raw_params
 ```
+
+## Roadmap
+
+- Async write pipeline for high-throughput audit logging
+- OpenTelemetry export
+- Prometheus metrics
+- Policy engine for allow/deny rules
+- SIEM-friendly exports
 
 ## Contributing
 
