@@ -31,6 +31,7 @@ type StdioConfig struct {
 	Log      *slog.Logger
 	ClientID string
 	ServerID string
+	Metrics  rateLimitMetrics
 }
 
 // StdioProxy transparently wraps a stdio MCP server process.
@@ -38,6 +39,10 @@ type StdioProxy struct {
 	config StdioConfig
 	log    *slog.Logger
 	state  *rpcState
+}
+
+type rateLimitMetrics interface {
+	RecordRateLimitRejection(clientID, toolName string)
 }
 
 // NewStdioProxy creates a stdio proxy.
@@ -210,6 +215,9 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 		if msg.Method != "" {
 			toolName := toolNameFromParams(msg.Method, msg.Params)
 			if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
+				if p.config.Metrics != nil {
+					p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
+				}
 				rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
 				if err := p.record(pendingCall{
 					method:    msg.Method,

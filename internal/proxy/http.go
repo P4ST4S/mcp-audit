@@ -28,6 +28,7 @@ type HTTPConfig struct {
 	Log      *slog.Logger
 	ClientID string
 	ServerID string
+	Metrics  rateLimitMetrics
 }
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
@@ -176,6 +177,9 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 		toolName := toolNameFromParams(msg.Method, msg.Params)
 		call := pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: startedAt}
 		if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
+			if p.config.Metrics != nil {
+				p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
+			}
 			rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
 			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 				p.log.Error("failed to audit rate limited http call", "error", err)

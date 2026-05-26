@@ -25,9 +25,18 @@ type batchAppender interface {
 	AppendBatch(entries []audit.Entry) error
 }
 
+// AsyncMetricsRecorder records async queue metrics.
+type AsyncMetricsRecorder interface {
+	SetAsyncQueueDepth(depth int)
+	SetAsyncQueueCapacity(capacity int)
+	RecordAsyncBackpressure()
+	RecordAsyncBatch(size int)
+}
+
 // AsyncStore wraps a Store with a bounded channel-backed ring buffer and batched flushes.
 type AsyncStore struct {
 	store         audit.Store
+	metrics       AsyncMetricsRecorder
 	entries       chan audit.Entry
 	flushRequests chan chan error
 	done          chan struct{}
@@ -43,6 +52,11 @@ type AsyncStore struct {
 
 // NewAsyncStore creates an asynchronous Store wrapper.
 func NewAsyncStore(store audit.Store, config AsyncConfig) *AsyncStore {
+	return NewAsyncStoreWithMetrics(store, config, nil)
+}
+
+// NewAsyncStoreWithMetrics creates an asynchronous Store wrapper with metrics.
+func NewAsyncStoreWithMetrics(store audit.Store, config AsyncConfig, metrics AsyncMetricsRecorder) *AsyncStore {
 	if config.QueueSize <= 0 {
 		config.QueueSize = defaultAsyncQueueSize
 	}
@@ -54,11 +68,16 @@ func NewAsyncStore(store audit.Store, config AsyncConfig) *AsyncStore {
 	}
 	async := &AsyncStore{
 		store:         store,
+		metrics:       metrics,
 		entries:       make(chan audit.Entry, config.QueueSize),
 		flushRequests: make(chan chan error),
 		done:          make(chan struct{}),
 		batchSize:     config.BatchSize,
 		flushInterval: time.Duration(config.FlushIntervalMS) * time.Millisecond,
+	}
+	async.updateQueueMetrics()
+	if async.metrics != nil {
+		async.metrics.SetAsyncQueueCapacity(cap(async.entries))
 	}
 	go async.run()
 	return async
@@ -73,7 +92,22 @@ func (s *AsyncStore) Append(entry audit.Entry) error {
 	defer s.closeMu.RUnlock()
 	select {
 	case s.entries <- entry:
+		s.updateQueueMetrics()
 		return nil
+	default:
+		if s.metrics != nil {
+			s.metrics.RecordAsyncBackpressure()
+		}
+		select {
+		case s.entries <- entry:
+			s.updateQueueMetrics()
+			return nil
+		case <-s.done:
+			if err := s.currentErr(); err != nil {
+				return err
+			}
+			return fmt.Errorf("audit: async: append after close")
+		}
 	case <-s.done:
 		if err := s.currentErr(); err != nil {
 			return err
@@ -134,6 +168,7 @@ func (s *AsyncStore) run() {
 	for {
 		select {
 		case entry, ok := <-s.entries:
+			s.updateQueueMetrics()
 			if !ok {
 				s.setErr(s.writeBatch(&batch))
 				return
@@ -165,6 +200,7 @@ func (s *AsyncStore) drainAndFlush(batch *[]audit.Entry) error {
 	for {
 		select {
 		case entry, ok := <-s.entries:
+			s.updateQueueMetrics()
 			if !ok {
 				return s.writeBatch(batch)
 			}
@@ -195,7 +231,11 @@ func (s *AsyncStore) writeBatch(batch *[]audit.Entry) error {
 			}
 		}
 	}
+	if s.metrics != nil {
+		s.metrics.RecordAsyncBatch(len(*batch))
+	}
 	*batch = (*batch)[:0]
+	s.updateQueueMetrics()
 	return nil
 }
 
@@ -214,4 +254,11 @@ func (s *AsyncStore) setErr(err error) {
 	if s.err == nil {
 		s.err = err
 	}
+}
+
+func (s *AsyncStore) updateQueueMetrics() {
+	if s.metrics == nil {
+		return
+	}
+	s.metrics.SetAsyncQueueDepth(len(s.entries))
 }

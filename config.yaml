@@ -34,3 +34,11 @@ middleware:
 dashboard:
   enabled: true
   port: 9090
+
+metrics:
+  enabled: true
+  port: 9091
+  path: /metrics
+  include_go_metrics: true
+  include_process_metrics: true
+  tool_labels: true

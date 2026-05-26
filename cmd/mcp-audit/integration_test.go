@@ -15,7 +15,7 @@ func TestStdioProxyWritesAuditEntry(t *testing.T) {
 	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 	input := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}` + "\n")
 
-	cmd := exec.Command("go", "run", ".", "--transport", "stdio", "--upstream", "cat", "--storage", "jsonl", "--no-dashboard", "--log-level", "error")
+	cmd := exec.Command("go", "run", ".", "--transport", "stdio", "--upstream", "cat", "--storage", "jsonl", "--no-dashboard", "--no-metrics", "--log-level", "error")
 	cmd.Env = append(os.Environ(), "AUDIT_PATH="+auditPath)
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout bytes.Buffer

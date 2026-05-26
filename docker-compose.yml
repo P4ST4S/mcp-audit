@@ -15,6 +15,7 @@ services:
     ports:
       - "4422:4422"
       - "9090:9090"
+      - "9091:9091"
     volumes:
       - ./audit.jsonl:/app/audit.jsonl
     depends_on:

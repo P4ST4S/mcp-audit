@@ -14,6 +14,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
+	"github.com/P4ST4S/mcp-audit/internal/metrics"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 	"github.com/spf13/viper"
@@ -54,6 +55,14 @@ type appConfig struct {
 		Enabled bool `mapstructure:"enabled"`
 		Port    int  `mapstructure:"port"`
 	} `mapstructure:"dashboard"`
+	Metrics struct {
+		Enabled               bool   `mapstructure:"enabled"`
+		Port                  int    `mapstructure:"port"`
+		Path                  string `mapstructure:"path"`
+		IncludeGoMetrics      bool   `mapstructure:"include_go_metrics"`
+		IncludeProcessMetrics bool   `mapstructure:"include_process_metrics"`
+		ToolLabels            bool   `mapstructure:"tool_labels"`
+	} `mapstructure:"metrics"`
 }
 
 type cliFlags struct {
@@ -63,6 +72,7 @@ type cliFlags struct {
 	port        int
 	storage     string
 	noDashboard bool
+	noMetrics   bool
 	logLevel    string
 	set         map[string]bool
 }
@@ -77,7 +87,13 @@ func main() {
 	}
 	logger = newLogger(configuredLogLevel(flags))
 
-	store, err := openStore(config)
+	metricsRecorder, metricsServer, err := newMetrics(config, logger)
+	if err != nil {
+		logger.Error("failed to initialize metrics", "error", err)
+		os.Exit(1)
+	}
+
+	store, err := openStore(config, metricsRecorder)
 	if err != nil {
 		logger.Error("failed to open audit store", "error", err)
 		os.Exit(1)
@@ -105,13 +121,14 @@ func main() {
 		Transport: config.Proxy.Transport,
 		ClientID:  config.Proxy.ClientID,
 		ServerID:  config.Proxy.ServerID,
+		Metrics:   metricsRecorder,
 	})
 	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	errs := make(chan error, 2)
+	errs := make(chan error, 3)
 	if config.Dashboard.Enabled {
 		server := dashboard.NewServer(dashboard.Config{
 			Enabled: true,
@@ -124,6 +141,12 @@ func main() {
 		}()
 		logger.Info("dashboard listening", "port", config.Dashboard.Port)
 	}
+	if metricsServer != nil {
+		go func() {
+			errs <- metricsServer.ListenAndServe(ctx)
+		}()
+		logger.Info("metrics listening", "port", config.Metrics.Port, "path", config.Metrics.Path)
+	}
 
 	switch config.Proxy.Transport {
 	case "stdio":
@@ -134,6 +157,7 @@ func main() {
 			Log:      logger,
 			ClientID: config.Proxy.ClientID,
 			ServerID: config.Proxy.ServerID,
+			Metrics:  metricsRecorder,
 		})
 		err = stdio.Run(ctx)
 	case "http":
@@ -145,6 +169,7 @@ func main() {
 			Log:      logger,
 			ClientID: config.Proxy.ClientID,
 			ServerID: config.Proxy.ServerID,
+			Metrics:  metricsRecorder,
 		})
 		if err != nil {
 			logger.Error("failed to create http proxy", "error", err)
@@ -178,6 +203,7 @@ func parseFlags() cliFlags {
 	flag.IntVar(&flags.port, "port", 0, "proxy port for http mode")
 	flag.StringVar(&flags.storage, "storage", "", "jsonl or sqlite")
 	flag.BoolVar(&flags.noDashboard, "no-dashboard", false, "disable dashboard")
+	flag.BoolVar(&flags.noMetrics, "no-metrics", false, "disable Prometheus metrics")
 	flag.StringVar(&flags.logLevel, "log-level", "info", "debug, info, warn, or error")
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
@@ -225,6 +251,12 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("middleware.redact.patterns", middleware.DefaultRedactPatterns)
 	v.SetDefault("dashboard.enabled", true)
 	v.SetDefault("dashboard.port", 9090)
+	v.SetDefault("metrics.enabled", true)
+	v.SetDefault("metrics.port", 9091)
+	v.SetDefault("metrics.path", "/metrics")
+	v.SetDefault("metrics.include_go_metrics", true)
+	v.SetDefault("metrics.include_process_metrics", true)
+	v.SetDefault("metrics.tool_labels", true)
 }
 
 func applyFlagOverrides(v *viper.Viper, flags cliFlags) {
@@ -243,6 +275,9 @@ func applyFlagOverrides(v *viper.Viper, flags cliFlags) {
 	if flags.set["no-dashboard"] && flags.noDashboard {
 		v.Set("dashboard.enabled", false)
 	}
+	if flags.set["no-metrics"] && flags.noMetrics {
+		v.Set("metrics.enabled", false)
+	}
 }
 
 func validateConfig(config appConfig) error {
@@ -254,6 +289,9 @@ func validateConfig(config appConfig) error {
 	if config.Proxy.Upstream == "" {
 		return fmt.Errorf("main: proxy.upstream is required")
 	}
+	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
+		return fmt.Errorf("main: metrics.path must start with /")
+	}
 	switch config.Audit.Storage {
 	case "jsonl", "sqlite":
 	default:
@@ -262,8 +300,28 @@ func validateConfig(config appConfig) error {
 	return nil
 }
 
-func openStore(config appConfig) (audit.Store, error) {
+func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metrics.PrometheusRecorder, error) {
+	if !config.Metrics.Enabled {
+		return metrics.Noop(), nil, nil
+	}
+	recorder, err := metrics.NewPrometheusRecorder(metrics.Config{
+		Enabled:               true,
+		Port:                  config.Metrics.Port,
+		Path:                  config.Metrics.Path,
+		IncludeGoMetrics:      config.Metrics.IncludeGoMetrics,
+		IncludeProcessMetrics: config.Metrics.IncludeProcessMetrics,
+		ToolLabels:            config.Metrics.ToolLabels,
+		Log:                   logger,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return recorder, recorder, nil
+}
+
+func openStore(config appConfig, metricsRecorder metrics.Recorder) (audit.Store, error) {
 	var store audit.Store
+	backend := config.Audit.Storage
 	switch config.Audit.Storage {
 	case "jsonl":
 		jsonl, err := storage.NewJSONLStore(config.Audit.Path)
@@ -281,11 +339,14 @@ func openStore(config appConfig) (audit.Store, error) {
 		return nil, fmt.Errorf("main: unknown storage backend %q", config.Audit.Storage)
 	}
 	if config.Audit.Async.Enabled {
-		store = storage.NewAsyncStore(store, storage.AsyncConfig{
+		store = storage.NewInstrumentedStore(store, metricsRecorder, backend, "async")
+		store = storage.NewAsyncStoreWithMetrics(store, storage.AsyncConfig{
 			QueueSize:       config.Audit.Async.QueueSize,
 			BatchSize:       config.Audit.Async.BatchSize,
 			FlushIntervalMS: config.Audit.Async.FlushIntervalMS,
-		})
+		}, metricsRecorder)
+	} else {
+		store = storage.NewInstrumentedStore(store, metricsRecorder, backend, "sync")
 	}
 	return store, nil
 }

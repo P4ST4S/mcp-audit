@@ -54,6 +54,11 @@ type Redactor interface {
 	Redact(raw json.RawMessage) json.RawMessage
 }
 
+// MetricsRecorder records audit metrics.
+type MetricsRecorder interface {
+	RecordAuditEntry(entry Entry)
+}
+
 // Logger records signed audit entries.
 type Logger struct {
 	store     Store
@@ -63,6 +68,7 @@ type Logger struct {
 	transport string
 	clientID  string
 	serverID  string
+	metrics   MetricsRecorder
 }
 
 // LoggerConfig configures a Logger.
@@ -74,6 +80,7 @@ type LoggerConfig struct {
 	Transport string
 	ClientID  string
 	ServerID  string
+	Metrics   MetricsRecorder
 }
 
 // NewLogger creates an audit logger.
@@ -90,6 +97,7 @@ func NewLogger(config LoggerConfig) *Logger {
 		transport: config.Transport,
 		clientID:  config.ClientID,
 		serverID:  config.ServerID,
+		metrics:   config.Metrics,
 	}
 }
 
@@ -122,6 +130,9 @@ func (l *Logger) Record(entry Entry) error {
 	}
 	if err := l.store.Append(entry); err != nil {
 		return fmt.Errorf("audit: logger: append: %w", err)
+	}
+	if l.metrics != nil {
+		l.metrics.RecordAuditEntry(entry)
 	}
 	l.log.Debug("audit entry recorded", "id", entry.ID, "method", entry.Method, "tool", entry.ToolName)
 	return nil

@@ -76,6 +76,7 @@ docker compose up --build
 ```
 
 The dashboard is available at `http://localhost:9090` by default.
+Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
 ## Configuration
 
@@ -103,6 +104,12 @@ The dashboard is available at `http://localhost:9090` by default.
 | `middleware.redact.patterns` | sensitive keys | Case-insensitive key fragments to redact. |
 | `dashboard.enabled` | `true` | Serve the dashboard. |
 | `dashboard.port` | `9090` | Dashboard listen port. |
+| `metrics.enabled` | `true` | Serve Prometheus metrics on a separate HTTP endpoint. |
+| `metrics.port` | `9091` | Metrics listen port. |
+| `metrics.path` | `/metrics` | Metrics HTTP path. |
+| `metrics.include_go_metrics` | `true` | Include Go runtime metrics. |
+| `metrics.include_process_metrics` | `true` | Include process metrics. |
+| `metrics.tool_labels` | `true` | Include `tool_name` and `client_id` labels for tool-level metrics. Disable to minimize label cardinality. |
 
 CLI flags:
 
@@ -113,6 +120,7 @@ CLI flags:
 --config       path to config.yaml
 --storage      jsonl | sqlite
 --no-dashboard disable the web dashboard
+--no-metrics   disable Prometheus metrics
 --log-level    debug | info | warn | error
 ```
 
@@ -142,6 +150,19 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 ## Dashboard
 
 The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
+
+## Prometheus Metrics
+
+`mcp-audit` exposes Prometheus metrics on a separate endpoint so platform teams can scrape operational data without exposing the dashboard.
+
+```yaml
+scrape_configs:
+  - job_name: mcp-audit
+    static_configs:
+      - targets: ["localhost:9091"]
+```
+
+Application metrics use the `mcp_audit_` prefix and avoid unbounded labels. Tool-level labels can be disabled with `metrics.tool_labels: false` for stricter cardinality control.
 
 ## Audit Entries
 
@@ -179,7 +200,6 @@ id + timestamp + method + tool_name + raw_params
 
 ## Roadmap
 
-- Prometheus metrics
 - OpenTelemetry export
 - Policy engine for allow/deny rules
 - SIEM-friendly exports
