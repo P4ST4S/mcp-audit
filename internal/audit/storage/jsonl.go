@@ -32,11 +32,22 @@ func NewJSONLStore(path string) (*JSONLStore, error) {
 
 // Append writes entry to the JSONL file.
 func (s *JSONLStore) Append(entry audit.Entry) error {
+	return s.AppendBatch([]audit.Entry{entry})
+}
+
+// AppendBatch writes entries to the JSONL file with a single flush.
+func (s *JSONLStore) AppendBatch(entries []audit.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := json.NewEncoder(s.writer).Encode(entry); err != nil {
-		return fmt.Errorf("audit: jsonl: encode: %w", err)
+	encoder := json.NewEncoder(s.writer)
+	for _, entry := range entries {
+		if err := encoder.Encode(entry); err != nil {
+			return fmt.Errorf("audit: jsonl: encode: %w", err)
+		}
 	}
 	if err := s.writer.Flush(); err != nil {
 		return fmt.Errorf("audit: jsonl: flush: %w", err)

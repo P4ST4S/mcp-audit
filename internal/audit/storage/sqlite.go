@@ -69,33 +69,59 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 
 // Append writes entry to SQLite.
 func (s *SQLiteStore) Append(entry audit.Entry) error {
-	errorJSON, err := json.Marshal(entry.Error)
+	return s.AppendBatch([]audit.Entry{entry})
+}
+
+// AppendBatch writes entries to SQLite in a single transaction.
+func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("audit: sqlite: marshal rpc error: %w", err)
+		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
 	}
-	if entry.Error == nil {
-		errorJSON = nil
-	}
-	_, err = s.db.Exec(`INSERT INTO audit_entries (
+	stmt, err := tx.Prepare(`INSERT INTO audit_entries (
 		id, timestamp, direction, transport, method, tool_name, params, result, error,
 		duration_ms, client_id, server_id, signature
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.ID,
-		entry.Timestamp.UTC().Format(time.RFC3339Nano),
-		entry.Direction,
-		entry.Transport,
-		entry.Method,
-		entry.ToolName,
-		string(entry.Params),
-		string(entry.Result),
-		string(errorJSON),
-		entry.DurationMs,
-		entry.ClientID,
-		entry.ServerID,
-		entry.Signature,
-	)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		return fmt.Errorf("audit: sqlite: insert: %w", err)
+		_ = tx.Rollback()
+		return fmt.Errorf("audit: sqlite: prepare batch: %w", err)
+	}
+	defer stmt.Close()
+
+	for _, entry := range entries {
+		errorJSON, err := json.Marshal(entry.Error)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("audit: sqlite: marshal rpc error: %w", err)
+		}
+		if entry.Error == nil {
+			errorJSON = nil
+		}
+		_, err = stmt.Exec(
+			entry.ID,
+			entry.Timestamp.UTC().Format(time.RFC3339Nano),
+			entry.Direction,
+			entry.Transport,
+			entry.Method,
+			entry.ToolName,
+			string(entry.Params),
+			string(entry.Result),
+			string(errorJSON),
+			entry.DurationMs,
+			entry.ClientID,
+			entry.ServerID,
+			entry.Signature,
+		)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("audit: sqlite: insert: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("audit: sqlite: commit batch: %w", err)
 	}
 	return nil
 }

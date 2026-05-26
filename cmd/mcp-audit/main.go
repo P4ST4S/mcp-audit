@@ -33,6 +33,12 @@ type appConfig struct {
 		SQLitePath string `mapstructure:"sqlite_path"`
 		Sign       bool   `mapstructure:"sign"`
 		Secret     string `mapstructure:"secret"`
+		Async      struct {
+			Enabled         bool `mapstructure:"enabled"`
+			QueueSize       int  `mapstructure:"queue_size"`
+			BatchSize       int  `mapstructure:"batch_size"`
+			FlushIntervalMS int  `mapstructure:"flush_interval_ms"`
+		} `mapstructure:"async"`
 	} `mapstructure:"audit"`
 	Middleware struct {
 		RateLimit struct {
@@ -209,6 +215,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
 	v.SetDefault("audit.sign", true)
+	v.SetDefault("audit.async.enabled", false)
+	v.SetDefault("audit.async.queue_size", 4096)
+	v.SetDefault("audit.async.batch_size", 128)
+	v.SetDefault("audit.async.flush_interval_ms", 1000)
 	v.SetDefault("middleware.rate_limit.enabled", true)
 	v.SetDefault("middleware.rate_limit.requests_per_minute", 60)
 	v.SetDefault("middleware.redact.enabled", true)
@@ -253,14 +263,31 @@ func validateConfig(config appConfig) error {
 }
 
 func openStore(config appConfig) (audit.Store, error) {
+	var store audit.Store
 	switch config.Audit.Storage {
 	case "jsonl":
-		return storage.NewJSONLStore(config.Audit.Path)
+		jsonl, err := storage.NewJSONLStore(config.Audit.Path)
+		if err != nil {
+			return nil, err
+		}
+		store = jsonl
 	case "sqlite":
-		return storage.NewSQLiteStore(config.Audit.SQLitePath)
+		sqlite, err := storage.NewSQLiteStore(config.Audit.SQLitePath)
+		if err != nil {
+			return nil, err
+		}
+		store = sqlite
 	default:
 		return nil, fmt.Errorf("main: unknown storage backend %q", config.Audit.Storage)
 	}
+	if config.Audit.Async.Enabled {
+		store = storage.NewAsyncStore(store, storage.AsyncConfig{
+			QueueSize:       config.Audit.Async.QueueSize,
+			BatchSize:       config.Audit.Async.BatchSize,
+			FlushIntervalMS: config.Audit.Async.FlushIntervalMS,
+		})
+	}
+	return store, nil
 }
 
 func newLogger(level string) *slog.Logger {

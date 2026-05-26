@@ -11,6 +11,11 @@ audit:
   sqlite_path: ./audit.db
   sign: true
   secret: ""
+  async:
+    enabled: false
+    queue_size: 4096
+    batch_size: 128
+    flush_interval_ms: 1000
 
 middleware:
   rate_limit:
