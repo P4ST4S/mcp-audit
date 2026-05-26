@@ -28,6 +28,7 @@ type Config struct {
 // Recorder captures operational metrics for the proxy and audit pipeline.
 type Recorder interface {
 	RecordAuditEntry(entry audit.Entry)
+	RecordPolicyDecision(action string)
 	RecordRateLimitRejection(clientID, toolName string)
 	RecordStorageWrite(backend, mode, status string, duration time.Duration, entries int)
 	SetAsyncQueueDepth(depth int)
@@ -44,6 +45,7 @@ func Noop() Recorder {
 }
 
 func (noopRecorder) RecordAuditEntry(audit.Entry)                                  {}
+func (noopRecorder) RecordPolicyDecision(string)                                   {}
 func (noopRecorder) RecordRateLimitRejection(string, string)                       {}
 func (noopRecorder) RecordStorageWrite(string, string, string, time.Duration, int) {}
 func (noopRecorder) SetAsyncQueueDepth(int)                                        {}
@@ -58,6 +60,7 @@ type PrometheusRecorder struct {
 	log      *slog.Logger
 
 	auditEntries      *prometheus.CounterVec
+	policyDecisions   *prometheus.CounterVec
 	toolCalls         *prometheus.CounterVec
 	rateLimitRejects  *prometheus.CounterVec
 	storageWrites     *prometheus.CounterVec
@@ -90,6 +93,10 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 			Name: "mcp_audit_entries_total",
 			Help: "Total audit entries recorded.",
 		}, []string{"transport", "direction", "method", "status"}),
+		policyDecisions: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_audit_policy_decisions_total",
+			Help: "Total policy decisions for MCP tools/call requests.",
+		}, []string{"action"}),
 		toolCalls: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mcp_audit_tool_calls_total",
 			Help: "Total MCP tools/call audit entries recorded.",
@@ -129,6 +136,7 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 	}
 	recorder.registry.MustRegister(
 		recorder.auditEntries,
+		recorder.policyDecisions,
 		recorder.storageWrites,
 		recorder.storageWriteTime,
 		recorder.asyncBackpressure,
@@ -206,6 +214,13 @@ func (r *PrometheusRecorder) RecordAuditEntry(entry audit.Entry) {
 		}
 		r.toolCalls.WithLabelValues(entry.Transport, toolName, status).Inc()
 	}
+}
+
+func (r *PrometheusRecorder) RecordPolicyDecision(action string) {
+	if action == "" {
+		action = "unknown"
+	}
+	r.policyDecisions.WithLabelValues(action).Inc()
 }
 
 func (r *PrometheusRecorder) RecordRateLimitRejection(clientID, toolName string) {

@@ -4,6 +4,16 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-27
+
+### Added
+
+- Policy engine for synchronous allow/deny rules on `tools/call`.
+- Ordered first-match policy rules by `client_id`, `server_id`, and `tool_name`.
+- `policy.*` configuration for default action and rule definitions.
+- JSON-RPC policy denial responses that are still written to the audit log.
+- Prometheus counter for policy decisions by action.
+
 ## [0.4.0] - 2026-05-27
 
 ### Added

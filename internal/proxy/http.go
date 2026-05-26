@@ -17,6 +17,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
 
 // HTTPConfig configures an HTTP MCP proxy.
@@ -25,10 +26,11 @@ type HTTPConfig struct {
 	Port     int
 	Audit    *audit.Logger
 	Limiter  *middleware.RateLimiter
+	Policy   *policy.Engine
 	Log      *slog.Logger
 	ClientID string
 	ServerID string
-	Metrics  rateLimitMetrics
+	Metrics  proxyMetrics
 }
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
@@ -176,6 +178,17 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 		}
 		toolName := toolNameFromParams(msg.Method, msg.Params)
 		call := pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: startedAt}
+		if msg.Method == "tools/call" {
+			decision := p.evaluatePolicy(toolName)
+			p.recordPolicyDecision(decision)
+			if !decision.Allowed {
+				rpcErr := policyError(decision)
+				if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+					p.log.Error("failed to audit policy denied http call", "error", err)
+				}
+				return pending, buildErrorResponse(msg.ID, rpcErr)
+			}
+		}
 		if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
 			if p.config.Metrics != nil {
 				p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
@@ -265,6 +278,24 @@ func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMe
 		ClientID:   p.config.ClientID,
 		ServerID:   p.config.ServerID,
 	})
+}
+
+func (p *HTTPProxy) evaluatePolicy(toolName string) policy.Decision {
+	if p.config.Policy == nil {
+		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
+	}
+	return p.config.Policy.Evaluate(policy.Request{
+		ClientID: p.config.ClientID,
+		ServerID: p.config.ServerID,
+		ToolName: toolName,
+	})
+}
+
+func (p *HTTPProxy) recordPolicyDecision(decision policy.Decision) {
+	if p.config.Policy == nil || p.config.Metrics == nil {
+		return
+	}
+	p.config.Metrics.RecordPolicyDecision(decision.Action)
 }
 
 func isEventStream(contentType string) bool {

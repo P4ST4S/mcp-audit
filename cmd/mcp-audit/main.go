@@ -16,6 +16,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/metrics"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/policy"
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 	"github.com/spf13/viper"
 )
@@ -51,6 +52,11 @@ type appConfig struct {
 			Patterns []string `mapstructure:"patterns"`
 		} `mapstructure:"redact"`
 	} `mapstructure:"middleware"`
+	Policy struct {
+		Enabled       bool          `mapstructure:"enabled"`
+		DefaultAction string        `mapstructure:"default_action"`
+		Rules         []policy.Rule `mapstructure:"rules"`
+	} `mapstructure:"policy"`
 	Dashboard struct {
 		Enabled bool `mapstructure:"enabled"`
 		Port    int  `mapstructure:"port"`
@@ -113,6 +119,11 @@ func main() {
 		signer = audit.NewSigner(secret)
 	}
 	redactor := middleware.NewRedactor(config.Middleware.Redact.Enabled, config.Middleware.Redact.Patterns)
+	policyEngine, err := newPolicy(config)
+	if err != nil {
+		logger.Error("failed to initialize policy engine", "error", err)
+		os.Exit(1)
+	}
 	auditLogger := audit.NewLogger(audit.LoggerConfig{
 		Store:     store,
 		Signer:    signer,
@@ -154,6 +165,7 @@ func main() {
 			Upstream: config.Proxy.Upstream,
 			Audit:    auditLogger,
 			Limiter:  limiter,
+			Policy:   policyEngine,
 			Log:      logger,
 			ClientID: config.Proxy.ClientID,
 			ServerID: config.Proxy.ServerID,
@@ -166,6 +178,7 @@ func main() {
 			Port:     config.Proxy.Port,
 			Audit:    auditLogger,
 			Limiter:  limiter,
+			Policy:   policyEngine,
 			Log:      logger,
 			ClientID: config.Proxy.ClientID,
 			ServerID: config.Proxy.ServerID,
@@ -249,6 +262,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("middleware.rate_limit.requests_per_minute", 60)
 	v.SetDefault("middleware.redact.enabled", true)
 	v.SetDefault("middleware.redact.patterns", middleware.DefaultRedactPatterns)
+	v.SetDefault("policy.enabled", false)
+	v.SetDefault("policy.default_action", policy.ActionAllow)
+	v.SetDefault("policy.rules", []policy.Rule{})
 	v.SetDefault("dashboard.enabled", true)
 	v.SetDefault("dashboard.port", 9090)
 	v.SetDefault("metrics.enabled", true)
@@ -298,6 +314,17 @@ func validateConfig(config appConfig) error {
 		return fmt.Errorf("main: audit.storage must be jsonl or sqlite")
 	}
 	return nil
+}
+
+func newPolicy(config appConfig) (*policy.Engine, error) {
+	if !config.Policy.Enabled {
+		return nil, nil
+	}
+	return policy.NewEngine(policy.Config{
+		Enabled:       config.Policy.Enabled,
+		DefaultAction: config.Policy.DefaultAction,
+		Rules:         config.Policy.Rules,
+	})
 }
 
 func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metrics.PrometheusRecorder, error) {

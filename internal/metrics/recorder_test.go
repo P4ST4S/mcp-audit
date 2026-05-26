@@ -21,6 +21,7 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 		ToolName:  "read_file",
 	})
 	recorder.RecordRateLimitRejection("client", "read_file")
+	recorder.RecordPolicyDecision("deny")
 	recorder.RecordStorageWrite("jsonl", "async", "ok", 10*time.Millisecond, 3)
 	recorder.SetAsyncQueueDepth(2)
 	recorder.SetAsyncQueueCapacity(10)
@@ -34,6 +35,7 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 
 	expected := []string{
 		`mcp_audit_entries_total{direction="client_to_server",method="tools/call",status="ok",transport="stdio"} 1`,
+		`mcp_audit_policy_decisions_total{action="deny"} 1`,
 		`mcp_audit_tool_calls_total{status="ok",tool_name="read_file",transport="stdio"} 1`,
 		`mcp_audit_rate_limit_rejections_total{client_id="client",tool_name="read_file"} 1`,
 		`mcp_audit_storage_writes_total{backend="jsonl",mode="async",status="ok"} 3`,

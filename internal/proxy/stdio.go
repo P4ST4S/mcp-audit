@@ -14,6 +14,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
 
 const (
@@ -28,10 +29,11 @@ type StdioConfig struct {
 	Upstream string
 	Audit    *audit.Logger
 	Limiter  *middleware.RateLimiter
+	Policy   *policy.Engine
 	Log      *slog.Logger
 	ClientID string
 	ServerID string
-	Metrics  rateLimitMetrics
+	Metrics  proxyMetrics
 }
 
 // StdioProxy transparently wraps a stdio MCP server process.
@@ -41,7 +43,8 @@ type StdioProxy struct {
 	state  *rpcState
 }
 
-type rateLimitMetrics interface {
+type proxyMetrics interface {
+	RecordPolicyDecision(action string)
 	RecordRateLimitRejection(clientID, toolName string)
 }
 
@@ -214,6 +217,22 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 	for _, msg := range messages {
 		if msg.Method != "" {
 			toolName := toolNameFromParams(msg.Method, msg.Params)
+			if msg.Method == "tools/call" {
+				decision := p.evaluatePolicy(toolName)
+				p.recordPolicyDecision(decision)
+				if !decision.Allowed {
+					rpcErr := policyError(decision)
+					if err := p.record(pendingCall{
+						method:    msg.Method,
+						toolName:  toolName,
+						params:    msg.Params,
+						startedAt: time.Now(),
+					}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+						p.log.Error("failed to audit policy denied call", "error", err)
+					}
+					return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
+				}
+			}
 			if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
 				if p.config.Metrics != nil {
 					p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
@@ -299,6 +318,24 @@ func (p *StdioProxy) record(call pendingCall, direction string, result json.RawM
 		ClientID:   p.config.ClientID,
 		ServerID:   p.config.ServerID,
 	})
+}
+
+func (p *StdioProxy) evaluatePolicy(toolName string) policy.Decision {
+	if p.config.Policy == nil {
+		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
+	}
+	return p.config.Policy.Evaluate(policy.Request{
+		ClientID: p.config.ClientID,
+		ServerID: p.config.ServerID,
+		ToolName: toolName,
+	})
+}
+
+func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
+	if p.config.Policy == nil || p.config.Metrics == nil {
+		return
+	}
+	p.config.Metrics.RecordPolicyDecision(decision.Action)
 }
 
 type pendingCall struct {

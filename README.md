@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 ![Status](https://img.shields.io/badge/Status-experimental-orange)
 
-A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce per-tool rate limits, and expose a local read-only dashboard.
+A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce allow/deny policies and per-tool rate limits, and expose a local read-only dashboard.
 
 ## Why mcp-audit?
 
@@ -41,7 +41,7 @@ Directories may show the tools exposed by the upstream server, not tools impleme
 - Detect unexpected or dangerous MCP tool usage
 - Keep signed JSONL or SQLite logs for incident review
 - Redact sensitive fields before storing requests and responses
-- Apply per-tool rate limits without modifying the upstream MCP server
+- Block disallowed tools and apply per-tool rate limits without modifying the upstream MCP server
 
 ## Demo
 
@@ -102,6 +102,9 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
 | `middleware.redact.patterns` | sensitive keys | Case-insensitive key fragments to redact. |
+| `policy.enabled` | `false` | Enable synchronous allow/deny policy checks for `tools/call`. |
+| `policy.default_action` | `allow` | Fallback action when no policy rule matches: `allow` or `deny`. |
+| `policy.rules` | empty | Ordered first-match allow/deny rules for tool calls. |
 | `dashboard.enabled` | `true` | Serve the dashboard. |
 | `dashboard.port` | `9090` | Dashboard listen port. |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on a separate HTTP endpoint. |
@@ -162,7 +165,25 @@ scrape_configs:
       - targets: ["localhost:9091"]
 ```
 
-Application metrics use the `mcp_audit_` prefix and avoid unbounded labels. Tool-level labels can be disabled with `metrics.tool_labels: false` for stricter cardinality control.
+Application metrics use the `mcp_audit_` prefix and avoid unbounded labels. Tool-level labels can be disabled with `metrics.tool_labels: false` for stricter cardinality control. Policy decisions are exposed as `mcp_audit_policy_decisions_total{action="allow|deny"}`.
+
+## Policy Engine
+
+`mcp-audit` can enforce synchronous allow/deny rules before a `tools/call` reaches the upstream MCP server. Denied calls return a JSON-RPC error and are still written to the audit log.
+
+```yaml
+policy:
+  enabled: true
+  default_action: allow
+  rules:
+    - action: deny
+      client_id: claude-desktop
+      server_id: filesystem
+      tool_name: delete_file
+      reason: "Destructive filesystem operations are blocked"
+```
+
+Rules are evaluated in order. Empty fields and `*` match any value, so `default_action: deny` can be used with explicit allow rules for stricter deployments.
 
 ## Audit Entries
 
@@ -201,7 +222,6 @@ id + timestamp + method + tool_name + raw_params
 ## Roadmap
 
 - OpenTelemetry export
-- Policy engine for allow/deny rules
 - SIEM-friendly exports
 
 ## Contributing

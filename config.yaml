@@ -31,6 +31,16 @@ middleware:
       - bearer
       - authorization
 
+policy:
+  enabled: false
+  default_action: allow
+  rules:
+    # - action: deny
+    #   client_id: claude-desktop
+    #   server_id: filesystem
+    #   tool_name: delete_file
+    #   reason: "Destructive filesystem operations are blocked"
+
 dashboard:
   enabled: true
   port: 9090
