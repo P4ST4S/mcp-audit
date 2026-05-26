@@ -68,7 +68,8 @@ All notable changes to mcp-audit are documented in this file.
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.1.0...v0.2.0
