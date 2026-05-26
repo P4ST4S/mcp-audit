@@ -93,6 +93,10 @@ The dashboard is available at `http://localhost:9090` by default.
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
 | `audit.sign` | `true` | Enable HMAC-SHA256 signatures when a secret is set. |
 | `audit.secret` | empty | HMAC secret. Prefer `AUDIT_SECRET`. |
+| `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
+| `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
+| `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |
+| `audit.async.flush_interval_ms` | `1000` | Maximum time before a partial batch is flushed. |
 | `middleware.rate_limit.enabled` | `true` | Enable per-client, per-tool token buckets. |
 | `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
@@ -179,7 +183,6 @@ id + timestamp + method + tool_name + raw_params
 - OpenTelemetry export
 - Policy engine for allow/deny rules
 - SIEM-friendly exports
-- Async write pipeline for high-throughput audit logging
 
 ## Contributing
 

@@ -4,6 +4,12 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Optional async audit write pipeline with a bounded ring buffer, batched writes, and explicit backpressure.
+- Batched JSONL and SQLite storage writes.
+- `audit.async.*` configuration for high-throughput deployments.
+
 ## [0.2.0] - 2026-05-25
 
 ### Added
