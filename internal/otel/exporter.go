@@ -217,7 +217,7 @@ func (e *Exporter) requestBody(entries []audit.Entry) ([]byte, error) {
 			{
 				Resource: resource{
 					Attributes: []keyValue{
-						stringAttr("service.name", e.config.ServiceName),
+						stringAttr(attrServiceName, e.config.ServiceName),
 					},
 				},
 				ScopeSpans: []scopeSpans{
@@ -271,46 +271,46 @@ func (e *Exporter) spanFromEntry(entry audit.Entry) (otlpSpan, error) {
 
 func (e *Exporter) attributes(entry audit.Entry) []keyValue {
 	attrs := []keyValue{
-		stringAttr("mcp.method.name", entry.Method),
-		stringAttr("network.transport", networkTransport(entry.Transport)),
-		stringAttr("mcp_audit.entry_id", entry.ID),
-		stringAttr("mcp_audit.direction", normalizeDirection(entry.Direction)),
-		boolAttr("mcp_audit.signature.present", entry.Signature != ""),
+		stringAttr(attrMCPMethodName, entry.Method),
+		stringAttr(attrNetworkTransport, networkTransport(entry.Transport)),
+		stringAttr(attrMCPAuditEntryID, entry.ID),
+		stringAttr(attrMCPAuditDirection, normalizeDirection(entry.Direction)),
+		boolAttr(attrMCPAuditSignaturePresent, entry.Signature != ""),
 	}
 	if entry.Transport == "http" {
-		attrs = append(attrs, stringAttr("network.protocol.name", "http"))
+		attrs = append(attrs, stringAttr(attrNetworkProtocolName, "http"))
 	}
 	if entry.Method == "tools/call" {
-		attrs = append(attrs, stringAttr("gen_ai.operation.name", "execute_tool"))
+		attrs = append(attrs, stringAttr(attrGenAIOperationName, "execute_tool"))
 	}
 	if entry.RequestID != "" {
-		attrs = append(attrs, stringAttr("jsonrpc.request.id", entry.RequestID))
+		attrs = append(attrs, stringAttr(attrJSONRPCRequestID, entry.RequestID))
 	}
 	if entry.ToolName != "" {
-		attrs = append(attrs, stringAttr("gen_ai.tool.name", entry.ToolName))
+		attrs = append(attrs, stringAttr(attrGenAIToolName, entry.ToolName))
 	}
 	if entry.ClientID != "" {
-		attrs = append(attrs, stringAttr("mcp_audit.client_id", entry.ClientID))
+		attrs = append(attrs, stringAttr(attrMCPAuditClientID, entry.ClientID))
 	}
 	if entry.ServerID != "" {
-		attrs = append(attrs, stringAttr("mcp_audit.server_id", entry.ServerID))
+		attrs = append(attrs, stringAttr(attrMCPAuditServerID, entry.ServerID))
 	}
 	if e.config.Storage != "" {
-		attrs = append(attrs, stringAttr("mcp_audit.storage", e.config.Storage))
+		attrs = append(attrs, stringAttr(attrMCPAuditStorage, e.config.Storage))
 	}
 	if e.serverAddress != "" {
-		attrs = append(attrs, stringAttr("server.address", e.serverAddress))
+		attrs = append(attrs, stringAttr(attrServerAddress, e.serverAddress))
 	}
 	if e.serverPort > 0 {
-		attrs = append(attrs, intAttr("server.port", int64(e.serverPort)))
+		attrs = append(attrs, intAttr(attrServerPort, int64(e.serverPort)))
 	}
 	if entry.Error != nil {
 		attrs = append(attrs,
-			intAttr("rpc.response.status_code", int64(entry.Error.Code)),
-			stringAttr("error.type", errorType(entry.Error.Code)),
+			intAttr(attrRPCResponseStatusCode, int64(entry.Error.Code)),
+			stringAttr(attrErrorType, errorType(entry.Error.Code)),
 		)
 	} else if toolResultIsError(entry.Result) {
-		attrs = append(attrs, stringAttr("error.type", "tool_error"))
+		attrs = append(attrs, stringAttr(attrErrorType, "tool_error"))
 	}
 	return attrs
 }
