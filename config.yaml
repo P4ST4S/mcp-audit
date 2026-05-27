@@ -52,3 +52,12 @@ metrics:
   include_go_metrics: true
   include_process_metrics: true
   tool_labels: true
+
+otel:
+  enabled: false
+  endpoint: "http://localhost:4318"
+  service_name: "mcp-audit"
+  queue_size: 1024
+  batch_size: 64
+  flush_interval_ms: 1000
+  timeout_ms: 5000

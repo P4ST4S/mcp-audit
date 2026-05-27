@@ -13,6 +13,10 @@ All notable changes to mcp-audit are documented in this file.
 - `policy.*` configuration for default action and rule definitions.
 - JSON-RPC policy denial responses that are still written to the audit log.
 - Prometheus counter for policy decisions by action.
+- OpenTelemetry OTLP/HTTP JSON trace export for `tools/call` audit entries.
+- MCP and GenAI semantic convention attributes for exported spans.
+- `otel.*` configuration for endpoint, service name, queueing, batching, and timeout.
+- JSON-RPC request IDs in audit entries and OTLP span attributes when present.
 
 ## [0.4.0] - 2026-05-27
 
