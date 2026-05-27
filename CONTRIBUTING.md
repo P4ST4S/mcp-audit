@@ -25,6 +25,17 @@ go test ./...
 Check issues labeled [`good first issue`](https://github.com/P4ST4S/mcp-audit/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) 
 for approachable starting points.
 
+## Project layout
+
+- `cmd/mcp-audit/` — CLI entry point and config loading
+- `internal/proxy/` — stdio and HTTP MCP proxies
+- `internal/audit/` — entry types, signing, JSONL and SQLite storage backends
+- `internal/policy/` — synchronous allow/deny policy engine
+- `internal/middleware/` — rate limiting and PII redaction
+- `internal/metrics/` — Prometheus metrics recorder and endpoint
+- `internal/otel/` — OTLP/HTTP JSON trace exporter
+- `internal/dashboard/` — read-only HTTP dashboard and JSON API
+
 ## Guiding principles
 
 - **Zero accidental message drop** — the proxy must not drop or modify JSON-RPC
