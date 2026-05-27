@@ -1,7 +1,6 @@
 # Contributing to mcp-audit
 
-Contributions are welcome. This is an experimental project — keep changes 
-focused and the scope small.
+Contributions are welcome. This is an experimental project - keep changes focused and the scope small.
 
 ## Getting started
 
@@ -48,13 +47,11 @@ for approachable starting points.
 
 ## Opening an issue
 
-For bugs, include Go version, OS, transport mode (stdio/http), and the 
-minimal config to reproduce. For features, check the existing issues first.
+For bugs, include Go version, OS, transport mode (stdio/http), and the minimal config to reproduce. For features, check the existing issues first.
 
 ## Security issues
 
-Please do not open public issues for security vulnerabilities. Report them
-privately to the maintainer.
+Please do not open public issues for security vulnerabilities. Report them privately to the maintainer.
 
 ## License
 
