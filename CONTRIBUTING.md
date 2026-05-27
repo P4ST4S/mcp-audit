@@ -27,24 +27,24 @@ for approachable starting points.
 
 ## Project layout
 
-- `cmd/mcp-audit/` — CLI entry point and config loading
-- `internal/proxy/` — stdio and HTTP MCP proxies
-- `internal/audit/` — entry types, signing, JSONL and SQLite storage backends
-- `internal/policy/` — synchronous allow/deny policy engine
-- `internal/middleware/` — rate limiting and PII redaction
-- `internal/metrics/` — Prometheus metrics recorder and endpoint
-- `internal/otel/` — OTLP/HTTP JSON trace exporter
-- `internal/dashboard/` — read-only HTTP dashboard and JSON API
+- `cmd/mcp-audit/` - CLI entry point and config loading
+- `internal/proxy/` - stdio and HTTP MCP proxies
+- `internal/audit/` - entry types, signing, JSONL and SQLite storage backends
+- `internal/policy/` - synchronous allow/deny policy engine
+- `internal/middleware/` - rate limiting and PII redaction
+- `internal/metrics/` - Prometheus metrics recorder and endpoint
+- `internal/otel/` - OTLP/HTTP JSON trace exporter
+- `internal/dashboard/` - read-only HTTP dashboard and JSON API
 
 ## Guiding principles
 
-- **Zero accidental message drop** — the proxy must not drop or modify JSON-RPC
+- **Zero accidental message drop** - the proxy must not drop or modify JSON-RPC
   messages because auditing or interception failed. If inspection fails,
   forward as-is and log the error separately. Intentional policy enforcement,
   such as rate limiting, must return a proper JSON-RPC error.
-- **Minimal dependencies** — prefer stdlib over new packages.
-- **Errors with context** — wrap errors: `fmt.Errorf("component: action: %w", err)`
-- **Thread safety** — all storage writes must be safe for concurrent use.
+- **Minimal dependencies** - prefer stdlib over new packages.
+- **Errors with context** - wrap errors: `fmt.Errorf("component: action: %w", err)`
+- **Thread safety** - all storage writes must be safe for concurrent use.
 
 ## Opening an issue
 
