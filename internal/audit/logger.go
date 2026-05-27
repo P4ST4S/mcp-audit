@@ -31,6 +31,7 @@ type Entry struct {
 	Direction  string          `json:"direction"`
 	Transport  string          `json:"transport"`
 	Method     string          `json:"method"`
+	RequestID  string          `json:"request_id,omitempty"`
 	ToolName   string          `json:"tool_name,omitempty"`
 	Params     json.RawMessage `json:"params,omitempty"`
 	Result     json.RawMessage `json:"result,omitempty"`
@@ -59,16 +60,22 @@ type MetricsRecorder interface {
 	RecordAuditEntry(entry Entry)
 }
 
+// TraceExporter exports audit entries to an operational tracing backend.
+type TraceExporter interface {
+	ExportAuditEntry(entry Entry) error
+}
+
 // Logger records signed audit entries.
 type Logger struct {
-	store     Store
-	signer    *Signer
-	redactor  Redactor
-	log       *slog.Logger
-	transport string
-	clientID  string
-	serverID  string
-	metrics   MetricsRecorder
+	store         Store
+	signer        *Signer
+	redactor      Redactor
+	traceExporter TraceExporter
+	log           *slog.Logger
+	transport     string
+	clientID      string
+	serverID      string
+	metrics       MetricsRecorder
 }
 
 // LoggerConfig configures a Logger.
@@ -81,6 +88,7 @@ type LoggerConfig struct {
 	ClientID  string
 	ServerID  string
 	Metrics   MetricsRecorder
+	Trace     TraceExporter
 }
 
 // NewLogger creates an audit logger.
@@ -90,14 +98,15 @@ func NewLogger(config LoggerConfig) *Logger {
 		logger = slog.Default()
 	}
 	return &Logger{
-		store:     config.Store,
-		signer:    config.Signer,
-		redactor:  config.Redactor,
-		log:       logger,
-		transport: config.Transport,
-		clientID:  config.ClientID,
-		serverID:  config.ServerID,
-		metrics:   config.Metrics,
+		store:         config.Store,
+		signer:        config.Signer,
+		redactor:      config.Redactor,
+		traceExporter: config.Trace,
+		log:           logger,
+		transport:     config.Transport,
+		clientID:      config.ClientID,
+		serverID:      config.ServerID,
+		metrics:       config.Metrics,
 	}
 }
 
@@ -133,6 +142,11 @@ func (l *Logger) Record(entry Entry) error {
 	}
 	if l.metrics != nil {
 		l.metrics.RecordAuditEntry(entry)
+	}
+	if l.traceExporter != nil {
+		if err := l.traceExporter.ExportAuditEntry(entry); err != nil {
+			l.log.Warn("failed to export audit trace", "id", entry.ID, "error", err)
+		}
 	}
 	l.log.Debug("audit entry recorded", "id", entry.ID, "method", entry.Method, "tool", entry.ToolName)
 	return nil

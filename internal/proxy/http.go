@@ -177,7 +177,13 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 			continue
 		}
 		toolName := toolNameFromParams(msg.Method, msg.Params)
-		call := pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: startedAt}
+		call := pendingCall{
+			method:    msg.Method,
+			requestID: jsonRPCID(msg.ID),
+			toolName:  toolName,
+			params:    msg.Params,
+			startedAt: startedAt,
+		}
 		if msg.Method == "tools/call" {
 			decision := p.evaluatePolicy(toolName)
 			p.recordPolicyDecision(decision)
@@ -270,6 +276,7 @@ func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMe
 	return p.config.Audit.Record(audit.Entry{
 		Direction:  direction,
 		Method:     call.method,
+		RequestID:  call.requestID,
 		ToolName:   call.toolName,
 		Params:     call.params,
 		Result:     result,

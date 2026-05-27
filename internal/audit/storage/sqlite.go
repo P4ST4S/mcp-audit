@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
@@ -45,6 +46,7 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 			direction TEXT NOT NULL,
 			transport TEXT NOT NULL,
 			method TEXT NOT NULL,
+			request_id TEXT,
 			tool_name TEXT,
 			params TEXT,
 			result TEXT,
@@ -64,6 +66,10 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 			return fmt.Errorf("audit: sqlite: init: %w", err)
 		}
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN request_id TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate request_id: %w", err)
+	}
 	return nil
 }
 
@@ -82,9 +88,9 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
 	}
 	stmt, err := tx.Prepare(`INSERT INTO audit_entries (
-		id, timestamp, direction, transport, method, tool_name, params, result, error,
+		id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
 		duration_ms, client_id, server_id, signature
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("audit: sqlite: prepare batch: %w", err)
@@ -106,6 +112,7 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 			entry.Direction,
 			entry.Transport,
 			entry.Method,
+			entry.RequestID,
 			entry.ToolName,
 			string(entry.Params),
 			string(entry.Result),
@@ -128,7 +135,7 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 
 // Query returns recent entries matching filter.
 func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
-	rows, err := s.db.Query(`SELECT id, timestamp, direction, transport, method, tool_name, params, result, error,
+	rows, err := s.db.Query(`SELECT id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
 		duration_ms, client_id, server_id, signature
 		FROM audit_entries
 		ORDER BY timestamp DESC
@@ -148,6 +155,7 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			&entry.Direction,
 			&entry.Transport,
 			&entry.Method,
+			&entry.RequestID,
 			&entry.ToolName,
 			&params,
 			&result,

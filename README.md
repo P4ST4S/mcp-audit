@@ -113,6 +113,13 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `metrics.include_go_metrics` | `true` | Include Go runtime metrics. |
 | `metrics.include_process_metrics` | `true` | Include process metrics. |
 | `metrics.tool_labels` | `true` | Include `tool_name` and `client_id` labels for tool-level metrics. Disable to minimize label cardinality. |
+| `otel.enabled` | `false` | Export `tools/call` audit entries as OTLP/HTTP JSON spans. |
+| `otel.endpoint` | `http://localhost:4318` | OTLP HTTP endpoint base URL. `/v1/traces` is appended automatically. |
+| `otel.service_name` | `mcp-audit` | OpenTelemetry `service.name` resource attribute. |
+| `otel.queue_size` | `1024` | Maximum queued audit entries before trace exports are dropped. |
+| `otel.batch_size` | `64` | Maximum spans per OTLP export request. |
+| `otel.flush_interval_ms` | `1000` | Maximum time before a partial OTLP batch is exported. |
+| `otel.timeout_ms` | `5000` | OTLP HTTP request timeout. |
 
 CLI flags:
 
@@ -185,6 +192,21 @@ policy:
 
 Rules are evaluated in order. Empty fields and `*` match any value, so `default_action: deny` can be used with explicit allow rules for stricter deployments.
 
+## OpenTelemetry
+
+`mcp-audit` can export `tools/call` audit entries as OTLP/HTTP JSON spans to Jaeger, Tempo, Honeycomb, or any OTLP-compatible collector.
+
+```yaml
+otel:
+  enabled: true
+  endpoint: "http://localhost:4318"
+  service_name: "mcp-audit"
+```
+
+The exporter uses current OpenTelemetry MCP and GenAI semantic conventions where possible, including `mcp.method.name`, `jsonrpc.request.id`, `gen_ai.operation.name`, `gen_ai.tool.name`, `network.transport`, `network.protocol.name`, `rpc.response.status_code`, and `error.type`. Project-specific attributes are kept link-oriented, such as `mcp_audit.entry_id`, `mcp_audit.direction`, `mcp_audit.client_id`, `mcp_audit.server_id`, `mcp_audit.storage`, and `mcp_audit.signature.present`.
+
+Request params and tool results are not exported to spans by default. The signed JSONL or SQLite audit row remains the evidence artifact; OTLP provides correlation, latency, and operational visibility.
+
 ## Audit Entries
 
 Each stored entry includes a ULID, timestamp, direction, transport, JSON-RPC method, tool name when present, redacted params/result, JSON-RPC error when present, duration, client/server identifiers, and an optional HMAC-SHA256 signature.
@@ -221,8 +243,8 @@ id + timestamp + method + tool_name + raw_params
 
 ## Roadmap
 
-- OpenTelemetry export
 - SIEM-friendly exports
+- OTLP compression and trace context propagation
 
 ## Contributing
 

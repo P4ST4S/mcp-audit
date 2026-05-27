@@ -224,6 +224,7 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 					rpcErr := policyError(decision)
 					if err := p.record(pendingCall{
 						method:    msg.Method,
+						requestID: jsonRPCID(msg.ID),
 						toolName:  toolName,
 						params:    msg.Params,
 						startedAt: time.Now(),
@@ -240,6 +241,7 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 				rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
 				if err := p.record(pendingCall{
 					method:    msg.Method,
+					requestID: jsonRPCID(msg.ID),
 					toolName:  toolName,
 					params:    msg.Params,
 					startedAt: time.Now(),
@@ -251,6 +253,7 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 			if len(msg.ID) > 0 {
 				p.state.rememberClient(string(msg.ID), pendingCall{
 					method:    msg.Method,
+					requestID: jsonRPCID(msg.ID),
 					toolName:  toolName,
 					params:    msg.Params,
 					startedAt: time.Now(),
@@ -285,6 +288,7 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 			if len(msg.ID) > 0 {
 				p.state.rememberServer(string(msg.ID), pendingCall{
 					method:    msg.Method,
+					requestID: jsonRPCID(msg.ID),
 					toolName:  toolName,
 					params:    msg.Params,
 					startedAt: time.Now(),
@@ -310,6 +314,7 @@ func (p *StdioProxy) record(call pendingCall, direction string, result json.RawM
 	return p.config.Audit.Record(audit.Entry{
 		Direction:  direction,
 		Method:     call.method,
+		RequestID:  call.requestID,
 		ToolName:   call.toolName,
 		Params:     call.params,
 		Result:     result,
@@ -340,6 +345,7 @@ func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
 
 type pendingCall struct {
 	method    string
+	requestID string
 	toolName  string
 	params    json.RawMessage
 	startedAt time.Time
@@ -462,6 +468,17 @@ func toolNameFromParams(method string, params json.RawMessage) string {
 		return alternate.ToolName
 	}
 	return ""
+}
+
+func jsonRPCID(id json.RawMessage) string {
+	if len(id) == 0 || string(id) == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(id, &asString); err == nil {
+		return asString
+	}
+	return string(id)
 }
 
 func buildErrorResponse(id json.RawMessage, rpcErr *audit.RPCError) []byte {

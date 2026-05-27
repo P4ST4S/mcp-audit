@@ -10,12 +10,14 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/metrics"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/otel"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 	"github.com/spf13/viper"
@@ -69,6 +71,15 @@ type appConfig struct {
 		IncludeProcessMetrics bool   `mapstructure:"include_process_metrics"`
 		ToolLabels            bool   `mapstructure:"tool_labels"`
 	} `mapstructure:"metrics"`
+	OTel struct {
+		Enabled         bool   `mapstructure:"enabled"`
+		Endpoint        string `mapstructure:"endpoint"`
+		ServiceName     string `mapstructure:"service_name"`
+		QueueSize       int    `mapstructure:"queue_size"`
+		BatchSize       int    `mapstructure:"batch_size"`
+		FlushIntervalMS int    `mapstructure:"flush_interval_ms"`
+		TimeoutMS       int    `mapstructure:"timeout_ms"`
+	} `mapstructure:"otel"`
 }
 
 type cliFlags struct {
@@ -97,6 +108,20 @@ func main() {
 	if err != nil {
 		logger.Error("failed to initialize metrics", "error", err)
 		os.Exit(1)
+	}
+	traceExporter, err := newTraceExporter(config, logger)
+	if err != nil {
+		logger.Error("failed to initialize otel exporter", "error", err)
+		os.Exit(1)
+	}
+	if traceExporter != nil {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := traceExporter.Close(shutdownCtx); err != nil {
+				logger.Warn("failed to close otel exporter", "error", err)
+			}
+		}()
 	}
 
 	store, err := openStore(config, metricsRecorder)
@@ -133,6 +158,7 @@ func main() {
 		ClientID:  config.Proxy.ClientID,
 		ServerID:  config.Proxy.ServerID,
 		Metrics:   metricsRecorder,
+		Trace:     traceExporter,
 	})
 	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
 
@@ -273,6 +299,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("metrics.include_go_metrics", true)
 	v.SetDefault("metrics.include_process_metrics", true)
 	v.SetDefault("metrics.tool_labels", true)
+	v.SetDefault("otel.enabled", false)
+	v.SetDefault("otel.endpoint", "http://localhost:4318")
+	v.SetDefault("otel.service_name", "mcp-audit")
+	v.SetDefault("otel.queue_size", 1024)
+	v.SetDefault("otel.batch_size", 64)
+	v.SetDefault("otel.flush_interval_ms", 1000)
+	v.SetDefault("otel.timeout_ms", 5000)
 }
 
 func applyFlagOverrides(v *viper.Viper, flags cliFlags) {
@@ -344,6 +377,24 @@ func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metri
 		return nil, nil, err
 	}
 	return recorder, recorder, nil
+}
+
+func newTraceExporter(config appConfig, logger *slog.Logger) (*otel.Exporter, error) {
+	if !config.OTel.Enabled {
+		return nil, nil
+	}
+	return otel.NewExporter(otel.Config{
+		Enabled:         true,
+		Endpoint:        config.OTel.Endpoint,
+		ServiceName:     config.OTel.ServiceName,
+		Storage:         config.Audit.Storage,
+		Upstream:        config.Proxy.Upstream,
+		QueueSize:       config.OTel.QueueSize,
+		BatchSize:       config.OTel.BatchSize,
+		FlushIntervalMS: config.OTel.FlushIntervalMS,
+		TimeoutMS:       config.OTel.TimeoutMS,
+		Log:             logger,
+	})
 }
 
 func openStore(config appConfig, metricsRecorder metrics.Recorder) (audit.Store, error) {
