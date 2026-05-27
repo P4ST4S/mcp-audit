@@ -5,6 +5,7 @@
 [![mcp-audit MCP server](https://glama.ai/mcp/servers/P4ST4S/mcp-audit/badges/score.svg)](https://glama.ai/mcp/servers/P4ST4S/mcp-audit)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 ![Status](https://img.shields.io/badge/Status-experimental-orange)
+[![GitHub Discussions](https://img.shields.io/github/discussions/P4ST4S/mcp-audit)](https://github.com/P4ST4S/mcp-audit/discussions)
 
 A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce allow/deny policies and per-tool rate limits, and expose a local read-only dashboard.
 
@@ -251,6 +252,12 @@ id + timestamp + method + tool_name + raw_params
 This project is experimental. Keep changes small, run `go build ./...` and `go vet ./...`, and prefer standard library behavior over new dependencies.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project principles. See [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## Community
+
+- [Discussions](https://github.com/P4ST4S/mcp-audit/discussions): questions, ideas, and design conversations
+- [Issues](https://github.com/P4ST4S/mcp-audit/issues): bug reports and concrete feature requests
+- Security: see [CONTRIBUTING.md](CONTRIBUTING.md#security-issues) for the private reporting channel
 
 ## License
 

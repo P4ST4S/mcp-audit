@@ -49,6 +49,8 @@ for approachable starting points.
 
 For bugs, include Go version, OS, transport mode (stdio/http), and the minimal config to reproduce. For features, check the existing issues first.
 
+For open-ended questions, design conversations, or "would it make sense to..." ideas, prefer [Discussions](https://github.com/P4ST4S/mcp-audit/discussions) over Issues.
+
 ## Security issues
 
 Please do not open public issues for security vulnerabilities. Report them privately to the maintainer.
