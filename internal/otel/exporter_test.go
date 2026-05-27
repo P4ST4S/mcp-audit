@@ -57,19 +57,19 @@ func TestSpanFromEntryUsesMCPSemanticConventions(t *testing.T) {
 		t.Fatalf("status code = %d, want error", span.Status.Code)
 	}
 	attrs := attrMap(span.Attributes)
-	assertStringAttr(t, attrs, "mcp.method.name", "tools/call")
-	assertStringAttr(t, attrs, "jsonrpc.request.id", "42")
-	assertStringAttr(t, attrs, "gen_ai.operation.name", "execute_tool")
-	assertStringAttr(t, attrs, "gen_ai.tool.name", "read_file")
-	assertStringAttr(t, attrs, "network.transport", "tcp")
-	assertStringAttr(t, attrs, "network.protocol.name", "http")
-	assertStringAttr(t, attrs, "error.type", "tool_error")
-	assertStringAttr(t, attrs, "mcp_audit.entry_id", entry.ID)
-	assertStringAttr(t, attrs, "mcp_audit.direction", "server_to_client")
-	assertBoolAttr(t, attrs, "mcp_audit.signature.present", true)
-	assertStringAttr(t, attrs, "mcp_audit.storage", "jsonl")
-	assertStringAttr(t, attrs, "server.address", "localhost")
-	assertIntAttr(t, attrs, "server.port", "8080")
+	assertStringAttr(t, attrs, attrMCPMethodName, "tools/call")
+	assertStringAttr(t, attrs, attrJSONRPCRequestID, "42")
+	assertStringAttr(t, attrs, attrGenAIOperationName, "execute_tool")
+	assertStringAttr(t, attrs, attrGenAIToolName, "read_file")
+	assertStringAttr(t, attrs, attrNetworkTransport, "tcp")
+	assertStringAttr(t, attrs, attrNetworkProtocolName, "http")
+	assertStringAttr(t, attrs, attrErrorType, "tool_error")
+	assertStringAttr(t, attrs, attrMCPAuditEntryID, entry.ID)
+	assertStringAttr(t, attrs, attrMCPAuditDirection, "server_to_client")
+	assertBoolAttr(t, attrs, attrMCPAuditSignaturePresent, true)
+	assertStringAttr(t, attrs, attrMCPAuditStorage, "jsonl")
+	assertStringAttr(t, attrs, attrServerAddress, "localhost")
+	assertIntAttr(t, attrs, attrServerPort, "8080")
 }
 
 func TestExporterPostsOTLPHTTPJSON(t *testing.T) {
@@ -120,7 +120,7 @@ func TestExporterPostsOTLPHTTPJSON(t *testing.T) {
 		if len(spans) != 1 {
 			t.Fatalf("spans = %d, want 1", len(spans))
 		}
-		assertStringAttr(t, attrMap(spans[0].Attributes), "network.transport", "pipe")
+		assertStringAttr(t, attrMap(spans[0].Attributes), attrNetworkTransport, "pipe")
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for otlp export")
 	}
@@ -191,10 +191,10 @@ func TestAuditLoggerExportsSpanEndToEnd(t *testing.T) {
 		}
 		span := payload.ResourceSpans[0].ScopeSpans[0].Spans[0]
 		attrs := attrMap(span.Attributes)
-		assertStringAttr(t, attrs, "jsonrpc.request.id", "req-1")
-		assertStringAttr(t, attrs, "gen_ai.tool.name", "read_file")
-		assertStringAttr(t, attrs, "mcp_audit.entry_id", store.entries[0].ID)
-		assertBoolAttr(t, attrs, "mcp_audit.signature.present", true)
+		assertStringAttr(t, attrs, attrJSONRPCRequestID, "req-1")
+		assertStringAttr(t, attrs, attrGenAIToolName, "read_file")
+		assertStringAttr(t, attrs, attrMCPAuditEntryID, store.entries[0].ID)
+		assertBoolAttr(t, attrs, attrMCPAuditSignaturePresent, true)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for otlp export")
 	}
