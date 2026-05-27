@@ -244,6 +244,7 @@ id + timestamp + method + tool_name + raw_params
 ## Roadmap
 
 - SIEM-friendly exports
+- OTLP compression and trace context propagation
 
 ## Contributing
 
