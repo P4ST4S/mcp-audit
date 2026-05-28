@@ -72,13 +72,24 @@ type appConfig struct {
 		ToolLabels            bool   `mapstructure:"tool_labels"`
 	} `mapstructure:"metrics"`
 	OTel struct {
-		Enabled         bool   `mapstructure:"enabled"`
-		Endpoint        string `mapstructure:"endpoint"`
-		ServiceName     string `mapstructure:"service_name"`
-		QueueSize       int    `mapstructure:"queue_size"`
-		BatchSize       int    `mapstructure:"batch_size"`
-		FlushIntervalMS int    `mapstructure:"flush_interval_ms"`
-		TimeoutMS       int    `mapstructure:"timeout_ms"`
+		Enabled     bool              `mapstructure:"enabled"`
+		Endpoint    string            `mapstructure:"endpoint"`
+		ServiceName string            `mapstructure:"service_name"`
+		Headers     map[string]string `mapstructure:"headers"`
+		TLS         struct {
+			CAFile             string `mapstructure:"ca_file"`
+			ServerName         string `mapstructure:"server_name"`
+			InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+		} `mapstructure:"tls"`
+		Retry struct {
+			MaxRetries        int `mapstructure:"max_retries"`
+			InitialIntervalMS int `mapstructure:"initial_interval_ms"`
+			MaxIntervalMS     int `mapstructure:"max_interval_ms"`
+		} `mapstructure:"retry"`
+		QueueSize       int `mapstructure:"queue_size"`
+		BatchSize       int `mapstructure:"batch_size"`
+		FlushIntervalMS int `mapstructure:"flush_interval_ms"`
+		TimeoutMS       int `mapstructure:"timeout_ms"`
 	} `mapstructure:"otel"`
 }
 
@@ -109,7 +120,7 @@ func main() {
 		logger.Error("failed to initialize metrics", "error", err)
 		os.Exit(1)
 	}
-	traceExporter, err := newTraceExporter(config, logger)
+	traceExporter, err := newTraceExporter(config, metricsRecorder, logger)
 	if err != nil {
 		logger.Error("failed to initialize otel exporter", "error", err)
 		os.Exit(1)
@@ -302,6 +313,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("otel.enabled", false)
 	v.SetDefault("otel.endpoint", "http://localhost:4318")
 	v.SetDefault("otel.service_name", "mcp-audit")
+	v.SetDefault("otel.headers", map[string]string{})
+	v.SetDefault("otel.tls.ca_file", "")
+	v.SetDefault("otel.tls.server_name", "")
+	v.SetDefault("otel.tls.insecure_skip_verify", false)
+	v.SetDefault("otel.retry.max_retries", 3)
+	v.SetDefault("otel.retry.initial_interval_ms", 200)
+	v.SetDefault("otel.retry.max_interval_ms", 2000)
 	v.SetDefault("otel.queue_size", 1024)
 	v.SetDefault("otel.batch_size", 64)
 	v.SetDefault("otel.flush_interval_ms", 1000)
@@ -341,6 +359,14 @@ func validateConfig(config appConfig) error {
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")
 	}
+	if config.OTel.Enabled {
+		if config.OTel.Endpoint == "" {
+			return fmt.Errorf("main: otel.endpoint is required when otel is enabled")
+		}
+		if config.OTel.Retry.MaxRetries < 0 {
+			return fmt.Errorf("main: otel.retry.max_retries must be >= 0")
+		}
+	}
 	switch config.Audit.Storage {
 	case "jsonl", "sqlite":
 	default:
@@ -379,21 +405,29 @@ func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metri
 	return recorder, recorder, nil
 }
 
-func newTraceExporter(config appConfig, logger *slog.Logger) (*otel.Exporter, error) {
+func newTraceExporter(config appConfig, metricsRecorder metrics.Recorder, logger *slog.Logger) (*otel.Exporter, error) {
 	if !config.OTel.Enabled {
 		return nil, nil
 	}
 	return otel.NewExporter(otel.Config{
-		Enabled:         true,
-		Endpoint:        config.OTel.Endpoint,
-		ServiceName:     config.OTel.ServiceName,
-		Storage:         config.Audit.Storage,
-		Upstream:        config.Proxy.Upstream,
-		QueueSize:       config.OTel.QueueSize,
-		BatchSize:       config.OTel.BatchSize,
-		FlushIntervalMS: config.OTel.FlushIntervalMS,
-		TimeoutMS:       config.OTel.TimeoutMS,
-		Log:             logger,
+		Enabled:               true,
+		Endpoint:              config.OTel.Endpoint,
+		ServiceName:           config.OTel.ServiceName,
+		Storage:               config.Audit.Storage,
+		Upstream:              config.Proxy.Upstream,
+		Headers:               config.OTel.Headers,
+		TLSCAFile:             config.OTel.TLS.CAFile,
+		TLSServerName:         config.OTel.TLS.ServerName,
+		TLSInsecureSkipVerify: config.OTel.TLS.InsecureSkipVerify,
+		MaxRetries:            config.OTel.Retry.MaxRetries,
+		RetryInitialMS:        config.OTel.Retry.InitialIntervalMS,
+		RetryMaxMS:            config.OTel.Retry.MaxIntervalMS,
+		QueueSize:             config.OTel.QueueSize,
+		BatchSize:             config.OTel.BatchSize,
+		FlushIntervalMS:       config.OTel.FlushIntervalMS,
+		TimeoutMS:             config.OTel.TimeoutMS,
+		Metrics:               metricsRecorder,
+		Log:                   logger,
 	})
 }
 

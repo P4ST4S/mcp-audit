@@ -57,6 +57,15 @@ otel:
   enabled: false
   endpoint: "http://localhost:4318"
   service_name: "mcp-audit"
+  headers: {}
+  tls:
+    ca_file: ""
+    server_name: ""
+    insecure_skip_verify: false
+  retry:
+    max_retries: 3
+    initial_interval_ms: 200
+    max_interval_ms: 2000
   queue_size: 1024
   batch_size: 64
   flush_interval_ms: 1000

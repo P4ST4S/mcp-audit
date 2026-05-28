@@ -117,6 +117,13 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `otel.enabled` | `false` | Export `tools/call` audit entries as OTLP/HTTP JSON spans. |
 | `otel.endpoint` | `http://localhost:4318` | OTLP HTTP endpoint base URL. `/v1/traces` is appended automatically. |
 | `otel.service_name` | `mcp-audit` | OpenTelemetry `service.name` resource attribute. |
+| `otel.headers` | empty | Additional OTLP HTTP headers, for example `Authorization` or API key headers. |
+| `otel.tls.ca_file` | empty | Optional CA bundle used to verify the OTLP endpoint. |
+| `otel.tls.server_name` | empty | Optional TLS server name override. |
+| `otel.tls.insecure_skip_verify` | `false` | Skip OTLP TLS certificate verification. Intended only for local testing. |
+| `otel.retry.max_retries` | `3` | Maximum OTLP retry attempts after a failed export request. |
+| `otel.retry.initial_interval_ms` | `200` | Initial OTLP retry backoff. |
+| `otel.retry.max_interval_ms` | `2000` | Maximum OTLP retry backoff. |
 | `otel.queue_size` | `1024` | Maximum queued audit entries before trace exports are dropped. |
 | `otel.batch_size` | `64` | Maximum spans per OTLP export request. |
 | `otel.flush_interval_ms` | `1000` | Maximum time before a partial OTLP batch is exported. |
@@ -202,11 +209,20 @@ otel:
   enabled: true
   endpoint: "http://localhost:4318"
   service_name: "mcp-audit"
+  headers:
+    Authorization: "Bearer your-token"
+  timeout_ms: 5000
+  retry:
+    max_retries: 3
+    initial_interval_ms: 200
+    max_interval_ms: 2000
 ```
 
 The exporter uses current OpenTelemetry MCP and GenAI semantic conventions where possible, including `mcp.method.name`, `jsonrpc.request.id`, `gen_ai.operation.name`, `gen_ai.tool.name`, `network.transport`, `network.protocol.name`, `rpc.response.status_code`, and `error.type`. Project-specific attributes are kept link-oriented, such as `mcp_audit.entry_id`, `mcp_audit.direction`, `mcp_audit.client_id`, `mcp_audit.server_id`, `mcp_audit.storage`, and `mcp_audit.signature.present`.
 
 Request params and tool results are not exported to spans by default. The signed JSONL or SQLite audit row remains the evidence artifact; OTLP provides correlation, latency, and operational visibility.
+
+Exporter health is visible through Prometheus metrics under the `mcp_audit_otel_` prefix, including export requests, span outcomes, dropped spans, queue depth, and queue capacity. Temporary OTLP failures are retried with bounded exponential backoff; `Retry-After` is honored for retryable responses up to `otel.retry.max_interval_ms`.
 
 ## Audit Entries
 
