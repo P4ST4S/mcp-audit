@@ -1,0 +1,61 @@
+# Cursor stdio example for routing an upstream MCP server through mcp-audit.
+# Copy this file next to the command you run, then edit proxy.upstream and the
+# identifiers below for your own upstream server.
+
+proxy:
+  transport: stdio
+  upstream: "npx -y @modelcontextprotocol/server-filesystem /path/to/allowed/root"
+  client_id: "cursor"
+  server_id: "filesystem"
+
+audit:
+  storage: jsonl
+  path: ./cursor-audit.jsonl
+  sqlite_path: ./cursor-audit.db
+  sign: true
+  secret: ""
+  async:
+    enabled: false
+    queue_size: 4096
+    batch_size: 128
+    flush_interval_ms: 1000
+
+middleware:
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+  redact:
+    enabled: true
+    patterns:
+      - password
+      - token
+      - secret
+      - api_key
+      - bearer
+      - authorization
+
+policy:
+  enabled: false
+  default_action: allow
+  rules: []
+
+dashboard:
+  enabled: true
+  port: 9090
+
+metrics:
+  enabled: true
+  port: 9091
+  path: /metrics
+  include_go_metrics: true
+  include_process_metrics: true
+  tool_labels: true
+
+otel:
+  enabled: false
+  endpoint: "http://localhost:4318"
+  service_name: "mcp-audit"
+  queue_size: 1024
+  batch_size: 64
+  flush_interval_ms: 1000
+  timeout_ms: 5000
