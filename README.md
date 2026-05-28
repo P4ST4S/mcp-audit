@@ -182,6 +182,8 @@ scrape_configs:
 
 Application metrics use the `mcp_audit_` prefix and avoid unbounded labels. Tool-level labels can be disabled with `metrics.tool_labels: false` for stricter cardinality control. Policy decisions are exposed as `mcp_audit_policy_decisions_total{action="allow|deny"}`.
 
+For a ready-made Prometheus + Grafana stack, see [examples/docker-compose-observability](examples/docker-compose-observability/README.md).
+
 ## Policy Engine
 
 `mcp-audit` can enforce synchronous allow/deny rules before a `tools/call` reaches the upstream MCP server. Denied calls return a JSON-RPC error and are still written to the audit log.
