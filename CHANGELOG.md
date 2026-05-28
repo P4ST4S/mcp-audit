@@ -4,6 +4,15 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-28
+
+### Added
+
+- OTLP HTTP header configuration for authenticated collectors.
+- OTLP TLS configuration for custom CA bundles, server name override, and local insecure verification.
+- Bounded OTLP retry with exponential backoff and `Retry-After` support.
+- Prometheus metrics for OTLP exports, dropped spans, and exporter queue depth/capacity.
+
 ## [0.6.1] - 2026-05-27
 
 ### Changed
@@ -83,7 +92,8 @@ All notable changes to mcp-audit are documented in this file.
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.4.0...v0.5.0

@@ -23,6 +23,10 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 	recorder.RecordRateLimitRejection("client", "read_file")
 	recorder.RecordPolicyDecision("deny")
 	recorder.RecordStorageWrite("jsonl", "async", "ok", 10*time.Millisecond, 3)
+	recorder.RecordOTelExport("ok", 20*time.Millisecond, 2)
+	recorder.RecordOTelDrop("queue_full", 1)
+	recorder.SetOTelQueueDepth(1)
+	recorder.SetOTelQueueCapacity(4)
 	recorder.SetAsyncQueueDepth(2)
 	recorder.SetAsyncQueueCapacity(10)
 	recorder.RecordAsyncBackpressure()
@@ -39,6 +43,11 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 		`mcp_audit_tool_calls_total{status="ok",tool_name="read_file",transport="stdio"} 1`,
 		`mcp_audit_rate_limit_rejections_total{client_id="client",tool_name="read_file"} 1`,
 		`mcp_audit_storage_writes_total{backend="jsonl",mode="async",status="ok"} 3`,
+		`mcp_audit_otel_export_requests_total{status="ok"} 1`,
+		`mcp_audit_otel_spans_total{status="ok"} 2`,
+		`mcp_audit_otel_spans_dropped_total{reason="queue_full"} 1`,
+		`mcp_audit_otel_queue_depth 1`,
+		`mcp_audit_otel_queue_capacity 4`,
 		`mcp_audit_async_queue_depth 2`,
 		`mcp_audit_async_queue_capacity 10`,
 		`mcp_audit_async_backpressure_total 1`,

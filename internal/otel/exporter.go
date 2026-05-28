@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,24 +31,42 @@ const (
 	defaultBatchSize       = 64
 	defaultFlushIntervalMS = 1000
 	defaultTimeoutMS       = 5000
+	defaultRetryInitialMS  = 200
+	defaultRetryMaxMS      = 2000
 
 	spanKindInternal = 1
 	statusCodeOK     = 1
 	statusCodeError  = 2
 )
 
+// MetricsRecorder records OTLP exporter metrics.
+type MetricsRecorder interface {
+	RecordOTelExport(status string, duration time.Duration, spans int)
+	RecordOTelDrop(reason string, spans int)
+	SetOTelQueueDepth(depth int)
+	SetOTelQueueCapacity(capacity int)
+}
+
 // Config configures direct OTLP/HTTP JSON trace export.
 type Config struct {
-	Enabled         bool
-	Endpoint        string
-	ServiceName     string
-	Storage         string
-	Upstream        string
-	QueueSize       int
-	BatchSize       int
-	FlushIntervalMS int
-	TimeoutMS       int
-	Log             *slog.Logger
+	Enabled               bool
+	Endpoint              string
+	ServiceName           string
+	Storage               string
+	Upstream              string
+	Headers               map[string]string
+	TLSCAFile             string
+	TLSServerName         string
+	TLSInsecureSkipVerify bool
+	QueueSize             int
+	BatchSize             int
+	FlushIntervalMS       int
+	TimeoutMS             int
+	MaxRetries            int
+	RetryInitialMS        int
+	RetryMaxMS            int
+	Metrics               MetricsRecorder
+	Log                   *slog.Logger
 }
 
 // Exporter exports audit entries as OTLP/HTTP JSON spans.
@@ -55,6 +76,8 @@ type Exporter struct {
 	endpoint      string
 	serverAddress string
 	serverPort    int
+	headers       map[string]string
+	metrics       MetricsRecorder
 	log           *slog.Logger
 
 	entries chan audit.Entry
@@ -84,7 +107,23 @@ func NewExporter(config Config) (*Exporter, error) {
 	if config.TimeoutMS <= 0 {
 		config.TimeoutMS = defaultTimeoutMS
 	}
+	if config.MaxRetries < 0 {
+		config.MaxRetries = 0
+	}
+	if config.RetryInitialMS <= 0 {
+		config.RetryInitialMS = defaultRetryInitialMS
+	}
+	if config.RetryMaxMS <= 0 {
+		config.RetryMaxMS = defaultRetryMaxMS
+	}
+	if config.RetryMaxMS < config.RetryInitialMS {
+		config.RetryMaxMS = config.RetryInitialMS
+	}
 	endpoint, err := tracesEndpoint(config.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newHTTPClient(config)
 	if err != nil {
 		return nil, err
 	}
@@ -95,12 +134,18 @@ func NewExporter(config Config) (*Exporter, error) {
 	serverAddress, serverPort := upstreamAddress(config.Upstream)
 	exporter := &Exporter{
 		config:        config,
-		client:        &http.Client{Timeout: time.Duration(config.TimeoutMS) * time.Millisecond},
+		client:        client,
 		endpoint:      endpoint,
 		serverAddress: serverAddress,
 		serverPort:    serverPort,
+		headers:       copyHeaders(config.Headers),
+		metrics:       config.Metrics,
 		log:           logger,
 		entries:       make(chan audit.Entry, config.QueueSize),
+	}
+	exporter.updateQueueMetrics()
+	if exporter.metrics != nil {
+		exporter.metrics.SetOTelQueueCapacity(cap(exporter.entries))
 	}
 	exporter.wg.Add(1)
 	go exporter.run()
@@ -119,8 +164,12 @@ func (e *Exporter) ExportAuditEntry(entry audit.Entry) error {
 	}
 	select {
 	case e.entries <- entry:
+		e.updateQueueMetrics()
 		return nil
 	default:
+		if e.metrics != nil {
+			e.metrics.RecordOTelDrop("queue_full", 1)
+		}
 		return fmt.Errorf("otel: export queue is full")
 	}
 }
@@ -157,6 +206,7 @@ func (e *Exporter) run() {
 	for {
 		select {
 		case entry, ok := <-e.entries:
+			e.updateQueueMetrics()
 			if !ok {
 				e.flush(batch)
 				return
@@ -183,24 +233,87 @@ func (e *Exporter) flush(entries []audit.Entry) {
 	payload, err := e.requestBody(entries)
 	if err != nil {
 		e.log.Warn("failed to build otlp payload", "error", err)
+		if e.metrics != nil {
+			e.metrics.RecordOTelDrop("encode_error", len(entries))
+		}
 		return
 	}
+	e.exportPayload(payload, len(entries))
+	e.updateQueueMetrics()
+}
+
+func (e *Exporter) exportPayload(payload []byte, spans int) {
+	backoff := time.Duration(e.config.RetryInitialMS) * time.Millisecond
+	maxBackoff := time.Duration(e.config.RetryMaxMS) * time.Millisecond
+	attempts := e.config.MaxRetries + 1
+	for attempt := 0; attempt < attempts; attempt++ {
+		startedAt := time.Now()
+		status, retryAfter, body, err := e.postPayload(payload)
+		duration := time.Since(startedAt)
+		if err == nil && status >= http.StatusOK && status < http.StatusMultipleChoices {
+			if e.metrics != nil {
+				e.metrics.RecordOTelExport("ok", duration, spans)
+			}
+			return
+		}
+		retryable := isRetryable(status, err)
+		finalAttempt := attempt == attempts-1
+		if !retryable || finalAttempt {
+			statusLabel := "error"
+			if !retryable {
+				statusLabel = "permanent_error"
+			}
+			if e.metrics != nil {
+				e.metrics.RecordOTelExport(statusLabel, duration, spans)
+				e.metrics.RecordOTelDrop(statusLabel, spans)
+			}
+			if err != nil {
+				e.log.Warn("failed to export otlp traces", "error", err, "attempt", attempt+1)
+				return
+			}
+			e.log.Warn("otlp export rejected", "status", status, "body", body, "attempt", attempt+1)
+			return
+		}
+		if e.metrics != nil {
+			e.metrics.RecordOTelExport("retry", duration, spans)
+		}
+		delay := retryAfter
+		if delay <= 0 {
+			delay = backoff
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+		if delay > maxBackoff {
+			delay = maxBackoff
+		}
+		time.Sleep(delay)
+	}
+}
+
+func (e *Exporter) postPayload(payload []byte) (int, time.Duration, string, error) {
 	req, err := http.NewRequest(http.MethodPost, e.endpoint, bytes.NewReader(payload))
 	if err != nil {
-		e.log.Warn("failed to create otlp request", "error", err)
-		return
+		return 0, 0, "", err
+	}
+	for key, value := range e.headers {
+		req.Header.Set(key, value)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if req.Header.Get("User-Agent") == "" {
+		req.Header.Set("User-Agent", "mcp-audit-otlp/1")
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
-		e.log.Warn("failed to export otlp traces", "error", err)
-		return
+		return 0, 0, "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		e.log.Warn("otlp export rejected", "status", resp.StatusCode, "body", string(body))
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		return resp.StatusCode, 0, "", nil
 	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+	return resp.StatusCode, retryAfter(resp.Header.Get("Retry-After")), string(body), nil
 }
 
 func (e *Exporter) requestBody(entries []audit.Entry) ([]byte, error) {
@@ -330,6 +443,62 @@ func tracesEndpoint(endpoint string) (string, error) {
 	return parsed.String(), nil
 }
 
+func newHTTPClient(config Config) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if config.TLSCAFile != "" || config.TLSServerName != "" || config.TLSInsecureSkipVerify {
+		tlsConfig := &tls.Config{
+			ServerName:         config.TLSServerName,
+			InsecureSkipVerify: config.TLSInsecureSkipVerify,
+			MinVersion:         tls.VersionTLS12,
+		}
+		if config.TLSCAFile != "" {
+			pemBytes, err := os.ReadFile(config.TLSCAFile)
+			if err != nil {
+				return nil, fmt.Errorf("otel: read tls ca file: %w", err)
+			}
+			roots := x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(pemBytes) {
+				return nil, fmt.Errorf("otel: parse tls ca file: no certificates found")
+			}
+			tlsConfig.RootCAs = roots
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+	return &http.Client{
+		Timeout:   time.Duration(config.TimeoutMS) * time.Millisecond,
+		Transport: transport,
+	}, nil
+}
+
+func retryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		delay := time.Until(when)
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
+}
+
+func isRetryable(status int, err error) bool {
+	if err != nil {
+		return true
+	}
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
+		return true
+	}
+	if status >= http.StatusInternalServerError && status != http.StatusNotImplemented {
+		return true
+	}
+	return false
+}
+
 func upstreamAddress(upstream string) (string, int) {
 	parsed, err := url.Parse(upstream)
 	if err != nil || parsed.Host == "" {
@@ -353,6 +522,27 @@ func upstreamAddress(upstream string) (string, int) {
 		return ip.String(), port
 	}
 	return host, port
+}
+
+func copyHeaders(headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for key, value := range headers {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+func (e *Exporter) updateQueueMetrics() {
+	if e.metrics == nil {
+		return
+	}
+	e.metrics.SetOTelQueueDepth(len(e.entries))
 }
 
 func spanName(entry audit.Entry) string {

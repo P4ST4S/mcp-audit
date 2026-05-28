@@ -130,6 +130,152 @@ func TestExporterPostsOTLPHTTPJSON(t *testing.T) {
 	}
 }
 
+func TestExporterAddsConfiguredHeaders(t *testing.T) {
+	called := false
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("authorization header = %q", got)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "test-key" {
+			t.Fatalf("x-api-key header = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != "mcp-audit-otlp/1" {
+			t.Fatalf("user-agent = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	exporter, err := NewExporter(Config{
+		Endpoint:        "http://collector.local",
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		Headers: map[string]string{
+			"Authorization": "Bearer test-token",
+			"X-Api-Key":     "test-key",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+	exporter.client.Transport = transport
+
+	exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 1)
+	if !called {
+		t.Fatal("transport was not called")
+	}
+}
+
+func TestExporterRetriesRetryableOTLPFailures(t *testing.T) {
+	attempts := 0
+	metrics := &recordingMetrics{}
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			return &http.Response{
+				StatusCode: http.StatusServiceUnavailable,
+				Body:       io.NopCloser(bytes.NewReader([]byte("collector unavailable"))),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Body:       io.NopCloser(bytes.NewReader(nil)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	exporter, err := NewExporter(Config{
+		Endpoint:        "http://collector.local",
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		MaxRetries:      1,
+		RetryInitialMS:  1,
+		RetryMaxMS:      1,
+		Metrics:         metrics,
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+	exporter.client.Transport = transport
+
+	exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 2)
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if got := metrics.exportStatuses; len(got) != 2 || got[0] != "retry" || got[1] != "ok" {
+		t.Fatalf("export statuses = %v, want [retry ok]", got)
+	}
+	if len(metrics.dropReasons) != 0 {
+		t.Fatalf("drop reasons = %v, want none", metrics.dropReasons)
+	}
+}
+
+func TestExporterDoesNotRetryPermanentOTLPFailures(t *testing.T) {
+	attempts := 0
+	metrics := &recordingMetrics{}
+	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Body:       io.NopCloser(bytes.NewReader([]byte("invalid payload"))),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	exporter, err := NewExporter(Config{
+		Endpoint:        "http://collector.local",
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		MaxRetries:      3,
+		RetryInitialMS:  1,
+		RetryMaxMS:      1,
+		Metrics:         metrics,
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+	exporter.client.Transport = transport
+
+	exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 2)
+	if attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", attempts)
+	}
+	if got := metrics.exportStatuses; len(got) != 1 || got[0] != "permanent_error" {
+		t.Fatalf("export statuses = %v, want [permanent_error]", got)
+	}
+	if got := metrics.dropReasons; len(got) != 1 || got[0] != "permanent_error" {
+		t.Fatalf("drop reasons = %v, want [permanent_error]", got)
+	}
+}
+
+func TestExporterRejectsInvalidTLSCAFile(t *testing.T) {
+	_, err := NewExporter(Config{
+		Endpoint:        "https://collector.local",
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		TLSCAFile:       t.TempDir() + "/missing-ca.pem",
+	})
+	if err == nil {
+		t.Fatal("expected TLS CA file error")
+	}
+}
+
 func TestAuditLoggerExportsSpanEndToEnd(t *testing.T) {
 	requests := make(chan []byte, 1)
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -214,6 +360,29 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+type recordingMetrics struct {
+	exportStatuses []string
+	dropReasons    []string
+	queueDepth     int
+	queueCapacity  int
+}
+
+func (m *recordingMetrics) RecordOTelExport(status string, _ time.Duration, _ int) {
+	m.exportStatuses = append(m.exportStatuses, status)
+}
+
+func (m *recordingMetrics) RecordOTelDrop(reason string, _ int) {
+	m.dropReasons = append(m.dropReasons, reason)
+}
+
+func (m *recordingMetrics) SetOTelQueueDepth(depth int) {
+	m.queueDepth = depth
+}
+
+func (m *recordingMetrics) SetOTelQueueCapacity(capacity int) {
+	m.queueCapacity = capacity
 }
 
 func attrMap(attrs []keyValue) map[string]anyValue {

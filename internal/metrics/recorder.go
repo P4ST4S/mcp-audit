@@ -31,6 +31,10 @@ type Recorder interface {
 	RecordPolicyDecision(action string)
 	RecordRateLimitRejection(clientID, toolName string)
 	RecordStorageWrite(backend, mode, status string, duration time.Duration, entries int)
+	RecordOTelExport(status string, duration time.Duration, spans int)
+	RecordOTelDrop(reason string, spans int)
+	SetOTelQueueDepth(depth int)
+	SetOTelQueueCapacity(capacity int)
 	SetAsyncQueueDepth(depth int)
 	SetAsyncQueueCapacity(capacity int)
 	RecordAsyncBackpressure()
@@ -48,6 +52,10 @@ func (noopRecorder) RecordAuditEntry(audit.Entry)                               
 func (noopRecorder) RecordPolicyDecision(string)                                   {}
 func (noopRecorder) RecordRateLimitRejection(string, string)                       {}
 func (noopRecorder) RecordStorageWrite(string, string, string, time.Duration, int) {}
+func (noopRecorder) RecordOTelExport(string, time.Duration, int)                   {}
+func (noopRecorder) RecordOTelDrop(string, int)                                    {}
+func (noopRecorder) SetOTelQueueDepth(int)                                         {}
+func (noopRecorder) SetOTelQueueCapacity(int)                                      {}
 func (noopRecorder) SetAsyncQueueDepth(int)                                        {}
 func (noopRecorder) SetAsyncQueueCapacity(int)                                     {}
 func (noopRecorder) RecordAsyncBackpressure()                                      {}
@@ -65,12 +73,18 @@ type PrometheusRecorder struct {
 	rateLimitRejects  *prometheus.CounterVec
 	storageWrites     *prometheus.CounterVec
 	storageWriteTime  *prometheus.HistogramVec
+	otelExports       *prometheus.CounterVec
+	otelExportSpans   *prometheus.CounterVec
+	otelExportTime    *prometheus.HistogramVec
+	otelDrops         *prometheus.CounterVec
 	asyncBackpressure prometheus.Counter
 	asyncBatches      prometheus.Counter
 	asyncBatchSize    prometheus.Histogram
 
 	asyncQueueDepth    atomic.Int64
 	asyncQueueCapacity atomic.Int64
+	otelQueueDepth     atomic.Int64
+	otelQueueCapacity  atomic.Int64
 }
 
 // NewPrometheusRecorder creates a recorder backed by a dedicated Prometheus registry.
@@ -114,6 +128,23 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 			Help:    "Audit storage write duration in seconds.",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5},
 		}, []string{"backend", "mode"}),
+		otelExports: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_audit_otel_export_requests_total",
+			Help: "Total OTLP trace export requests.",
+		}, []string{"status"}),
+		otelExportSpans: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_audit_otel_spans_total",
+			Help: "Total OTLP spans by export outcome.",
+		}, []string{"status"}),
+		otelExportTime: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "mcp_audit_otel_export_duration_seconds",
+			Help:    "OTLP trace export request duration in seconds.",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+		}, []string{"status"}),
+		otelDrops: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_audit_otel_spans_dropped_total",
+			Help: "Total OTLP spans dropped before successful export.",
+		}, []string{"reason"}),
 		asyncBackpressure: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "mcp_audit_async_backpressure_total",
 			Help: "Total times async audit writes encountered a full queue.",
@@ -139,6 +170,10 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 		recorder.policyDecisions,
 		recorder.storageWrites,
 		recorder.storageWriteTime,
+		recorder.otelExports,
+		recorder.otelExportSpans,
+		recorder.otelExportTime,
+		recorder.otelDrops,
 		recorder.asyncBackpressure,
 		recorder.asyncBatches,
 		recorder.asyncBatchSize,
@@ -153,6 +188,18 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 			Help: "Maximum number of queued async audit entries.",
 		}, func() float64 {
 			return float64(recorder.asyncQueueCapacity.Load())
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "mcp_audit_otel_queue_depth",
+			Help: "Current number of queued OTLP spans.",
+		}, func() float64 {
+			return float64(recorder.otelQueueDepth.Load())
+		}),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+			Name: "mcp_audit_otel_queue_capacity",
+			Help: "Maximum number of queued OTLP spans.",
+		}, func() float64 {
+			return float64(recorder.otelQueueCapacity.Load())
 		}),
 	)
 	if config.ToolLabels {
@@ -242,6 +289,36 @@ func (r *PrometheusRecorder) RecordStorageWrite(backend, mode, status string, du
 	}
 	r.storageWrites.WithLabelValues(backend, mode, status).Add(float64(entries))
 	r.storageWriteTime.WithLabelValues(backend, mode).Observe(duration.Seconds())
+}
+
+func (r *PrometheusRecorder) RecordOTelExport(status string, duration time.Duration, spans int) {
+	if status == "" {
+		status = "unknown"
+	}
+	if spans <= 0 {
+		return
+	}
+	r.otelExports.WithLabelValues(status).Inc()
+	r.otelExportSpans.WithLabelValues(status).Add(float64(spans))
+	r.otelExportTime.WithLabelValues(status).Observe(duration.Seconds())
+}
+
+func (r *PrometheusRecorder) RecordOTelDrop(reason string, spans int) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	if spans <= 0 {
+		return
+	}
+	r.otelDrops.WithLabelValues(reason).Add(float64(spans))
+}
+
+func (r *PrometheusRecorder) SetOTelQueueDepth(depth int) {
+	r.otelQueueDepth.Store(int64(depth))
+}
+
+func (r *PrometheusRecorder) SetOTelQueueCapacity(capacity int) {
+	r.otelQueueCapacity.Store(int64(capacity))
 }
 
 func (r *PrometheusRecorder) SetAsyncQueueDepth(depth int) {
