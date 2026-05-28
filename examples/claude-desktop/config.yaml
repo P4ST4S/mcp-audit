@@ -1,0 +1,36 @@
+proxy:
+  transport: stdio
+  # Replace this with the MCP server Claude Desktop should reach through mcp-audit.
+  upstream: "npx @modelcontextprotocol/server-filesystem /Users/you/Documents"
+  client_id: "claude-desktop"
+  server_id: "filesystem"
+
+audit:
+  storage: jsonl
+  path: "/Users/you/.mcp-audit/claude-desktop-audit.jsonl"
+  sign: true
+  # Prefer AUDIT_SECRET in the Claude Desktop config instead of committing a secret here.
+  secret: ""
+
+middleware:
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+  redact:
+    enabled: true
+    patterns:
+      - password
+      - token
+      - secret
+      - api_key
+      - bearer
+      - authorization
+
+dashboard:
+  enabled: true
+  port: 9090
+
+metrics:
+  enabled: true
+  port: 9091
+  path: /metrics

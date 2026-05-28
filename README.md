@@ -315,6 +315,9 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 }
 ```
 
+Copy-ready client examples live under [`examples/`](examples/), including a
+self-contained [Claude Desktop example](examples/claude-desktop/).
+
 ## Dashboard
 
 The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
