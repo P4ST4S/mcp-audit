@@ -4,6 +4,11 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `proxy.upstream_timeout_ms` config and `--upstream-timeout` flag for HTTP upstream request timeout (default 30s).
+
+
 ## [0.7.0] - 2026-05-28
 
 ### Added
