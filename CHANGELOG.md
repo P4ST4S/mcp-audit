@@ -4,6 +4,10 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- `--version` output now includes the `v` prefix consistently across GoReleaser binaries and Docker images.
+
 ## [0.9.0] - 2026-05-29
 
 ### Added
