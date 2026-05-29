@@ -79,6 +79,10 @@ docker compose up --build
 The dashboard is available at `http://localhost:9090` by default.
 Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
+## Examples
+
+- [Cursor stdio configuration](examples/cursor/README.md)
+
 ## Configuration
 
 `mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values, and `AUDIT_SECRET` overrides `audit.secret`.
