@@ -1,26 +1,24 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
 
+// TestHTTPProxyTimesOutUpstreamRequests verifies slow upstream requests use the
+// existing bad-gateway error path instead of hanging indefinitely.
 func TestHTTPProxyTimesOutUpstreamRequests(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
-
 	proxy, err := NewHTTPProxy(HTTPConfig{
-		Upstream:          upstream.URL,
+		Upstream:          "http://upstream.local",
 		UpstreamTimeoutMS: 10,
 	})
 	if err != nil {
 		t.Fatalf("new http proxy: %v", err)
 	}
+	proxy.client.Transport = blockingRoundTripper{}
 
 	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", nil)
 	rec := httptest.NewRecorder()
@@ -32,6 +30,15 @@ func TestHTTPProxyTimesOutUpstreamRequests(t *testing.T) {
 	}
 }
 
+type blockingRoundTripper struct{}
+
+func (blockingRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	<-r.Context().Done()
+	return nil, fmt.Errorf("round trip canceled: %w", r.Context().Err())
+}
+
+// TestNewHTTPProxySetsUpstreamTimeout verifies explicit timeout configuration
+// is applied to the upstream HTTP client.
 func TestNewHTTPProxySetsUpstreamTimeout(t *testing.T) {
 	proxy, err := NewHTTPProxy(HTTPConfig{
 		Upstream:          "http://upstream.local",
@@ -45,6 +52,8 @@ func TestNewHTTPProxySetsUpstreamTimeout(t *testing.T) {
 	}
 }
 
+// TestNewHTTPProxyDefaultsUpstreamTimeout verifies direct proxy construction
+// still uses the package default when no timeout is provided.
 func TestNewHTTPProxyDefaultsUpstreamTimeout(t *testing.T) {
 	proxy, err := NewHTTPProxy(HTTPConfig{
 		Upstream: "http://upstream.local",

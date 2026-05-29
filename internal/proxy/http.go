@@ -25,8 +25,9 @@ const DefaultHTTPUpstreamTimeoutMS = 30000
 
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
-	Upstream          string
-	Port              int
+	Upstream string
+	Port     int
+	// UpstreamTimeoutMS bounds each HTTP request to the upstream MCP server.
 	UpstreamTimeoutMS int
 	Audit             *audit.Logger
 	Limiter           *middleware.RateLimiter

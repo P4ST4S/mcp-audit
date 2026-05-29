@@ -8,6 +8,8 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 )
 
+// TestLoadConfigUsesDefaultUpstreamTimeout verifies the HTTP upstream timeout
+// default is applied when neither config nor flags specify it.
 func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 	config, err := loadConfig(cliFlags{
 		config:   filepath.Join(t.TempDir(), "missing.yaml"),
@@ -24,6 +26,8 @@ func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 	}
 }
 
+// TestLoadConfigReadsUpstreamTimeout verifies config.yaml can set the HTTP
+// upstream timeout.
 func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
@@ -42,6 +46,8 @@ func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
 	}
 }
 
+// TestLoadConfigUpstreamTimeoutFlagOverridesConfig verifies the CLI flag has
+// higher precedence than config.yaml for the HTTP upstream timeout.
 func TestLoadConfigUpstreamTimeoutFlagOverridesConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
@@ -63,6 +69,8 @@ func TestLoadConfigUpstreamTimeoutFlagOverridesConfig(t *testing.T) {
 	}
 }
 
+// TestValidateConfigRejectsInvalidUpstreamTimeout verifies HTTP mode rejects a
+// non-positive upstream timeout.
 func TestValidateConfigRejectsInvalidUpstreamTimeout(t *testing.T) {
 	config := appConfig{}
 	config.Proxy.Transport = "http"
@@ -73,6 +81,8 @@ func TestValidateConfigRejectsInvalidUpstreamTimeout(t *testing.T) {
 	}
 }
 
+// TestValidateConfigAllowsUnsetStdioUpstreamTimeout verifies the HTTP-only
+// timeout validation does not affect stdio mode.
 func TestValidateConfigAllowsUnsetStdioUpstreamTimeout(t *testing.T) {
 	config := appConfig{}
 	config.Proxy.Transport = "stdio"
