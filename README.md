@@ -36,6 +36,8 @@ Directories may show the tools exposed by the upstream server, not tools impleme
 - `stdio` for local MCP clients such as Claude Desktop
 - `http` for MCP servers exposed over HTTP
 
+HTTP upstreams can use custom CA bundles, TLS server name overrides, and optional mTLS client certificates. Upstream retries are disabled by default and only apply to conservative, idempotent JSON-RPC methods when enabled; `tools/call` is not retried.
+
 ## Use Cases
 
 - Audit tool calls made by AI agents in regulated environments
@@ -93,6 +95,14 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
 | `proxy.port` | `4422` | HTTP listen port. |
 | `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
+| `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
+| `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
+| `proxy.tls.insecure_skip_verify` | `false` | Skip upstream TLS certificate verification. Intended only for local testing. |
+| `proxy.tls.client_cert_file` | empty | Optional client certificate for upstream mTLS. Must be configured with `proxy.tls.client_key_file`. |
+| `proxy.tls.client_key_file` | empty | Optional client key for upstream mTLS. Must be configured with `proxy.tls.client_cert_file`. |
+| `proxy.retry.max_retries` | `0` | Maximum conservative retry attempts for safe HTTP upstream requests. Off by default. |
+| `proxy.retry.initial_interval_ms` | `200` | Initial upstream retry backoff. |
+| `proxy.retry.max_interval_ms` | `2000` | Maximum upstream retry backoff. |
 | `proxy.client_id` | `claude-desktop` | Client identifier written to audit entries. |
 | `proxy.server_id` | `filesystem` | Server identifier written to audit entries. |
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |

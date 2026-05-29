@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +19,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 )
 
 const (
@@ -444,30 +442,18 @@ func tracesEndpoint(endpoint string) (string, error) {
 }
 
 func newHTTPClient(config Config) (*http.Client, error) {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if config.TLSCAFile != "" || config.TLSServerName != "" || config.TLSInsecureSkipVerify {
-		tlsConfig := &tls.Config{
+	client, err := httpclient.New(httpclient.Config{
+		Timeout: time.Duration(config.TimeoutMS) * time.Millisecond,
+		TLS: httpclient.TLSConfig{
+			CAFile:             config.TLSCAFile,
 			ServerName:         config.TLSServerName,
 			InsecureSkipVerify: config.TLSInsecureSkipVerify,
-			MinVersion:         tls.VersionTLS12,
-		}
-		if config.TLSCAFile != "" {
-			pemBytes, err := os.ReadFile(config.TLSCAFile)
-			if err != nil {
-				return nil, fmt.Errorf("otel: read tls ca file: %w", err)
-			}
-			roots := x509.NewCertPool()
-			if !roots.AppendCertsFromPEM(pemBytes) {
-				return nil, fmt.Errorf("otel: parse tls ca file: no certificates found")
-			}
-			tlsConfig.RootCAs = roots
-		}
-		transport.TLSClientConfig = tlsConfig
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("otel: %w", err)
 	}
-	return &http.Client{
-		Timeout:   time.Duration(config.TimeoutMS) * time.Millisecond,
-		Transport: transport,
-	}, nil
+	return client, nil
 }
 
 func retryAfter(value string) time.Duration {

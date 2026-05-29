@@ -12,10 +12,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
@@ -23,12 +25,26 @@ import (
 // DefaultHTTPUpstreamTimeoutMS is the default timeout for HTTP upstream requests.
 const DefaultHTTPUpstreamTimeoutMS = 30000
 
+const (
+	defaultHTTPRetryInitialIntervalMS = 200
+	defaultHTTPRetryMaxIntervalMS     = 2000
+)
+
+// HTTPRetryConfig configures conservative retries to the upstream HTTP MCP server.
+type HTTPRetryConfig struct {
+	MaxRetries        int
+	InitialIntervalMS int
+	MaxIntervalMS     int
+}
+
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
 	Upstream string
 	Port     int
 	// UpstreamTimeoutMS bounds each HTTP request to the upstream MCP server.
 	UpstreamTimeoutMS int
+	TLS               httpclient.TLSConfig
+	Retry             HTTPRetryConfig
 	Audit             *audit.Logger
 	Limiter           *middleware.RateLimiter
 	Policy            *policy.Engine
@@ -62,13 +78,30 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if config.UpstreamTimeoutMS <= 0 {
 		config.UpstreamTimeoutMS = DefaultHTTPUpstreamTimeoutMS
 	}
+	if config.Retry.MaxRetries < 0 {
+		config.Retry.MaxRetries = 0
+	}
+	if config.Retry.InitialIntervalMS <= 0 {
+		config.Retry.InitialIntervalMS = defaultHTTPRetryInitialIntervalMS
+	}
+	if config.Retry.MaxIntervalMS <= 0 {
+		config.Retry.MaxIntervalMS = defaultHTTPRetryMaxIntervalMS
+	}
+	if config.Retry.MaxIntervalMS < config.Retry.InitialIntervalMS {
+		config.Retry.MaxIntervalMS = config.Retry.InitialIntervalMS
+	}
+	client, err := httpclient.New(httpclient.Config{
+		Timeout: time.Duration(config.UpstreamTimeoutMS) * time.Millisecond,
+		TLS:     config.TLS,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("proxy: http: upstream client: %w", err)
+	}
 	return &HTTPProxy{
 		config:   config,
 		upstream: upstream,
-		client: &http.Client{
-			Timeout: time.Duration(config.UpstreamTimeoutMS) * time.Millisecond,
-		},
-		log: logger,
+		client:   client,
+		log:      logger,
 	}, nil
 }
 
@@ -123,23 +156,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, p.targetURL(r).String(), bytes.NewReader(body))
-	if err != nil {
-		http.Error(w, "failed to create upstream request", http.StatusBadGateway)
-		p.log.Error("failed to create upstream request", "error", err)
-		return
-	}
-	copyHeader(upstreamReq.Header, r.Header)
-	if ip := clientIP(r); ip != "" {
-		if prior := upstreamReq.Header.Get("X-Forwarded-For"); prior != "" {
-			upstreamReq.Header.Set("X-Forwarded-For", prior+", "+ip)
-		} else {
-			upstreamReq.Header.Set("X-Forwarded-For", ip)
-		}
-	}
-	upstreamReq.Host = p.upstream.Host
-
-	resp, err := p.client.Do(upstreamReq)
+	resp, err := p.doUpstreamRequest(r, body)
 	if err != nil {
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		p.log.Error("upstream request failed", "error", err)
@@ -163,6 +180,90 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 	p.observeHTTPResponse(respBody, pending)
+}
+
+func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
+	safeToRetry := p.safeToRetry(r.Method, body)
+	backoff := time.Duration(p.config.Retry.InitialIntervalMS) * time.Millisecond
+	maxBackoff := time.Duration(p.config.Retry.MaxIntervalMS) * time.Millisecond
+	for attempt := 0; ; attempt++ {
+		tracker := &trackingReader{reader: bytes.NewReader(body)}
+		upstreamReq, err := p.newUpstreamRequest(r, tracker)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := p.client.Do(upstreamReq)
+		if !p.shouldRetryUpstream(attempt, safeToRetry, tracker.bytesRead, resp, err) {
+			return resp, err
+		}
+		if resp != nil && resp.Body != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+			_ = resp.Body.Close()
+		}
+		delay := retryDelay(resp, backoff, maxBackoff)
+		if delay <= 0 {
+			delay = backoff
+		}
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+		p.log.Warn("retrying upstream request", "attempt", attempt+1, "delay_ms", delay.Milliseconds())
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+}
+
+func (p *HTTPProxy) newUpstreamRequest(r *http.Request, body io.Reader) (*http.Request, error) {
+	upstreamReq, err := http.NewRequestWithContext(r.Context(), r.Method, p.targetURL(r).String(), body)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: http: create upstream request: %w", err)
+	}
+	copyHeader(upstreamReq.Header, r.Header)
+	if ip := clientIP(r); ip != "" {
+		if prior := upstreamReq.Header.Get("X-Forwarded-For"); prior != "" {
+			upstreamReq.Header.Set("X-Forwarded-For", prior+", "+ip)
+		} else {
+			upstreamReq.Header.Set("X-Forwarded-For", ip)
+		}
+	}
+	upstreamReq.Host = p.upstream.Host
+	return upstreamReq, nil
+}
+
+func (p *HTTPProxy) shouldRetryUpstream(attempt int, safeToRetry bool, bodyBytesRead int64, resp *http.Response, err error) bool {
+	if p.config.Retry.MaxRetries <= 0 || attempt >= p.config.Retry.MaxRetries || !safeToRetry {
+		return false
+	}
+	if err != nil {
+		return bodyBytesRead == 0
+	}
+	if resp == nil {
+		return false
+	}
+	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+}
+
+func (p *HTTPProxy) safeToRetry(method string, body []byte) bool {
+	if method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions {
+		return true
+	}
+	if method != http.MethodPost || len(bytes.TrimSpace(body)) == 0 {
+		return false
+	}
+	messages, err := decodeMessages(body)
+	if err != nil || len(messages) == 0 {
+		return false
+	}
+	for _, msg := range messages {
+		if !safeJSONRPCMethod(msg.Method) {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *HTTPProxy) targetURL(r *http.Request) *url.URL {
@@ -356,4 +457,61 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return host
+}
+
+type trackingReader struct {
+	reader    *bytes.Reader
+	bytesRead int64
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytesRead += int64(n)
+	return n, err
+}
+
+func safeJSONRPCMethod(method string) bool {
+	switch method {
+	case "initialize",
+		"ping",
+		"tools/list",
+		"resources/list",
+		"resources/read",
+		"resources/templates/list",
+		"prompts/list",
+		"prompts/get",
+		"completion/complete":
+		return true
+	default:
+		return false
+	}
+}
+
+func retryDelay(resp *http.Response, fallback, maxDelay time.Duration) time.Duration {
+	delay := fallback
+	if resp != nil {
+		if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
+			delay = retryAfter
+		}
+	}
+	if maxDelay > 0 && delay > maxDelay {
+		delay = maxDelay
+	}
+	return delay
+}
+
+func parseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		delay := time.Until(when)
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
