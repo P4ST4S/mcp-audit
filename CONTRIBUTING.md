@@ -1,6 +1,6 @@
 # Contributing to mcp-audit
 
-Contributions are welcome. This is an experimental project - keep changes focused and the scope small.
+Contributions are welcome. This is a beta project - keep changes focused and the scope small.
 
 ## Getting started
 

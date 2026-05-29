@@ -4,7 +4,7 @@
 [![CI](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml)
 [![mcp-audit MCP server](https://glama.ai/mcp/servers/P4ST4S/mcp-audit/badges/score.svg)](https://glama.ai/mcp/servers/P4ST4S/mcp-audit)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
-![Status](https://img.shields.io/badge/Status-experimental-orange)
+![Status](https://img.shields.io/badge/Status-beta-yellow)
 [![GitHub Discussions](https://img.shields.io/badge/discussions-join-blue?logo=github)](https://github.com/P4ST4S/mcp-audit/discussions)
 
 A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce allow/deny policies and per-tool rate limits, and expose a local read-only dashboard.
@@ -50,14 +50,33 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 
 ![mcp-audit demo](demo/mcp-audit-demo.gif)
 
-## Quick Start
+## Install
 
-Install Go, then build from source:
+Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-audit/releases):
 
 ```bash
-brew install go
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.2.0
+curl -L -o mcp-audit.tar.gz \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_linux_amd64.tar.gz
+curl -L -o mcp-audit_checksums.txt \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_checksums.txt
+sha256sum -c mcp-audit_checksums.txt --ignore-missing
+tar -xzf mcp-audit.tar.gz
+./mcp-audit --version
 ```
+
+Run with Docker:
+
+```bash
+docker run --rm ghcr.io/p4st4s/mcp-audit:v0.9.0 --version
+```
+
+Or install with Go:
+
+```bash
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.9.0
+```
+
+## Quick Start
 
 Run in stdio mode:
 
@@ -155,6 +174,7 @@ CLI flags:
 --storage      jsonl | sqlite
 --no-dashboard disable the web dashboard
 --no-metrics   disable Prometheus metrics
+--version      print version and exit
 --log-level    debug | info | warn | error
 ```
 
@@ -283,7 +303,7 @@ id + timestamp + method + tool_name + raw_params
 
 ## Contributing
 
-This project is experimental. Keep changes small, run `go build ./...` and `go vet ./...`, and prefer standard library behavior over new dependencies.
+This project is in beta. Keep changes small, run `go build ./...` and `go vet ./...`, and prefer standard library behavior over new dependencies.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project principles. See [CHANGELOG.md](CHANGELOG.md) for release history.
 

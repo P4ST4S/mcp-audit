@@ -40,7 +40,11 @@ Thumbs.db
 
 # Build output
 /mcp-audit
+dist/
 
 # Audit data
 audit.jsonl
 audit.db
+*.db
+*.sqlite
+*.sqlite3

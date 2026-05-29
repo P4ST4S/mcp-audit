@@ -4,10 +4,19 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-29
+
 ### Added
 
 - Cursor stdio configuration example under `examples/cursor/`.
 - Docker Compose observability example with Prometheus and Grafana under `examples/docker-compose-observability/`.
+- `--version` flag with release metadata injected at build time.
+- GoReleaser configuration for Linux, macOS, and Windows binaries.
+- SHA256 checksums for release archives.
+- GitHub Actions release workflow for `v*` tags.
+- Multi-stage non-root Docker image for `mcp-audit`.
+- GHCR publishing workflow for multi-arch `linux/amd64` and `linux/arm64` images.
+- README installation instructions for release binaries, Docker, and `go install`.
 
 ## [0.8.0] - 2026-05-29
 
@@ -108,7 +117,8 @@ All notable changes to mcp-audit are documented in this file.
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.0...v0.6.1
