@@ -25,11 +25,12 @@ import (
 
 type appConfig struct {
 	Proxy struct {
-		Transport string `mapstructure:"transport"`
-		Upstream  string `mapstructure:"upstream"`
-		Port      int    `mapstructure:"port"`
-		ClientID  string `mapstructure:"client_id"`
-		ServerID  string `mapstructure:"server_id"`
+		Transport         string `mapstructure:"transport"`
+		Upstream          string `mapstructure:"upstream"`
+		Port              int    `mapstructure:"port"`
+		UpstreamTimeoutMS int    `mapstructure:"upstream_timeout_ms"`
+		ClientID          string `mapstructure:"client_id"`
+		ServerID          string `mapstructure:"server_id"`
 	} `mapstructure:"proxy"`
 	Audit struct {
 		Storage    string `mapstructure:"storage"`
@@ -98,6 +99,7 @@ type cliFlags struct {
 	transport   string
 	upstream    string
 	port        int
+	timeout     int
 	storage     string
 	noDashboard bool
 	noMetrics   bool
@@ -211,15 +213,16 @@ func main() {
 		err = stdio.Run(ctx)
 	case "http":
 		httpProxy, err := proxy.NewHTTPProxy(proxy.HTTPConfig{
-			Upstream: config.Proxy.Upstream,
-			Port:     config.Proxy.Port,
-			Audit:    auditLogger,
-			Limiter:  limiter,
-			Policy:   policyEngine,
-			Log:      logger,
-			ClientID: config.Proxy.ClientID,
-			ServerID: config.Proxy.ServerID,
-			Metrics:  metricsRecorder,
+			Upstream:          config.Proxy.Upstream,
+			Port:              config.Proxy.Port,
+			UpstreamTimeoutMS: config.Proxy.UpstreamTimeoutMS,
+			Audit:             auditLogger,
+			Limiter:           limiter,
+			Policy:            policyEngine,
+			Log:               logger,
+			ClientID:          config.Proxy.ClientID,
+			ServerID:          config.Proxy.ServerID,
+			Metrics:           metricsRecorder,
 		})
 		if err != nil {
 			logger.Error("failed to create http proxy", "error", err)
@@ -251,6 +254,7 @@ func parseFlags() cliFlags {
 	flag.StringVar(&flags.transport, "transport", "", "stdio or http")
 	flag.StringVar(&flags.upstream, "upstream", "", "upstream server command or URL")
 	flag.IntVar(&flags.port, "port", 0, "proxy port for http mode")
+	flag.IntVar(&flags.timeout, "upstream-timeout", 0, "upstream HTTP request timeout in milliseconds")
 	flag.StringVar(&flags.storage, "storage", "", "jsonl or sqlite")
 	flag.BoolVar(&flags.noDashboard, "no-dashboard", false, "disable dashboard")
 	flag.BoolVar(&flags.noMetrics, "no-metrics", false, "disable Prometheus metrics")
@@ -285,6 +289,7 @@ func loadConfig(flags cliFlags) (appConfig, error) {
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
 	v.SetDefault("proxy.port", 4422)
+	v.SetDefault("proxy.upstream_timeout_ms", proxy.DefaultHTTPUpstreamTimeoutMS)
 	v.SetDefault("proxy.client_id", "claude-desktop")
 	v.SetDefault("proxy.server_id", "filesystem")
 	v.SetDefault("audit.storage", "jsonl")
@@ -336,6 +341,9 @@ func applyFlagOverrides(v *viper.Viper, flags cliFlags) {
 	if flags.set["port"] {
 		v.Set("proxy.port", flags.port)
 	}
+	if flags.set["upstream-timeout"] {
+		v.Set("proxy.upstream_timeout_ms", flags.timeout)
+	}
 	if flags.set["storage"] {
 		v.Set("audit.storage", flags.storage)
 	}
@@ -355,6 +363,9 @@ func validateConfig(config appConfig) error {
 	}
 	if config.Proxy.Upstream == "" {
 		return fmt.Errorf("main: proxy.upstream is required")
+	}
+	if config.Proxy.Transport == "http" && config.Proxy.UpstreamTimeoutMS <= 0 {
+		return fmt.Errorf("main: proxy.upstream_timeout_ms must be > 0")
 	}
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")

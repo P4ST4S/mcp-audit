@@ -2,6 +2,7 @@ proxy:
   transport: stdio
   upstream: "npx @modelcontextprotocol/server-filesystem /tmp"
   port: 4422
+  upstream_timeout_ms: 30000
   client_id: "claude-desktop"
   server_id: "filesystem"
 

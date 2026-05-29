@@ -20,17 +20,21 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
 
+// DefaultHTTPUpstreamTimeoutMS is the default timeout for HTTP upstream requests.
+const DefaultHTTPUpstreamTimeoutMS = 30000
+
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
-	Upstream string
-	Port     int
-	Audit    *audit.Logger
-	Limiter  *middleware.RateLimiter
-	Policy   *policy.Engine
-	Log      *slog.Logger
-	ClientID string
-	ServerID string
-	Metrics  proxyMetrics
+	Upstream          string
+	Port              int
+	UpstreamTimeoutMS int
+	Audit             *audit.Logger
+	Limiter           *middleware.RateLimiter
+	Policy            *policy.Engine
+	Log               *slog.Logger
+	ClientID          string
+	ServerID          string
+	Metrics           proxyMetrics
 }
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
@@ -54,11 +58,16 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if config.UpstreamTimeoutMS <= 0 {
+		config.UpstreamTimeoutMS = DefaultHTTPUpstreamTimeoutMS
+	}
 	return &HTTPProxy{
 		config:   config,
 		upstream: upstream,
-		client:   &http.Client{},
-		log:      logger,
+		client: &http.Client{
+			Timeout: time.Duration(config.UpstreamTimeoutMS) * time.Millisecond,
+		},
+		log: logger,
 	}, nil
 }
 
