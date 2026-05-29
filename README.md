@@ -56,9 +56,9 @@ Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_linux_amd64.tar.gz
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_linux_amd64.tar.gz
 curl -L -o mcp-audit_checksums.txt \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_checksums.txt
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
 sha256sum -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
