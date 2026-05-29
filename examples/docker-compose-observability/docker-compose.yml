@@ -1,13 +1,25 @@
 services:
-  filesystem:
-    image: node:22-alpine
-    working_dir: /srv
+  mock-mcp:
+    image: python:3.12-alpine
     command:
-      - sh
+      - python
       - -c
-      - npx -y @modelcontextprotocol/server-filesystem --transport streamable-http --port 3000 /data
-    volumes:
-      - ./data:/data
+      - |
+        import json, http.server
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                result = {"jsonrpc":"2.0","id":body.get("id"),"result":{"content":[{"type":"text","text":"mock response"}]}}
+                data = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header('Content-Type','application/json')
+                self.send_header('Content-Length',len(data))
+                self.end_headers()
+                self.wfile.write(data)
+        http.server.HTTPServer(('',3000),H).serve_forever()
+    ports:
+      - "3000:3000"
 
   mcp-audit:
     build: ../..
@@ -15,21 +27,21 @@ services:
       - --transport
       - http
       - --upstream
-      - http://filesystem:3000/mcp
+      - http://mock-mcp:3000/mcp
       - --port
       - "4422"
       - --storage
       - jsonl
     environment:
-      AUDIT_SECRET: change-me
+      AUDIT_SECRET: replace-with-a-long-random-secret
     ports:
       - "4422:4422"
       - "9090:9090"
       - "9091:9091"
     volumes:
-      - ./audit.jsonl:/app/audit.jsonl
+      - ./audit-data:/app
     depends_on:
-      - filesystem
+      - mock-mcp
 
   prometheus:
     image: prom/prometheus:latest
