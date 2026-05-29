@@ -53,7 +53,7 @@ For open-ended questions, design conversations, or "would it make sense to..." i
 
 ## Security issues
 
-Please do not open public issues for security vulnerabilities. Report them privately to the maintainer.
+Please do not open public issues for security vulnerabilities. Follow the private reporting process in [SECURITY.md](SECURITY.md).
 
 ## License
 

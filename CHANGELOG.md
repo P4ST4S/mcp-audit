@@ -8,6 +8,7 @@ All notable changes to mcp-audit are documented in this file.
 
 - `proxy.upstream_timeout_ms` config and `--upstream-timeout` flag for HTTP upstream request timeout (default 30s).
 - Cursor stdio configuration example under `examples/cursor/`.
+- Formal security disclosure policy in `SECURITY.md`, with GitHub Security Advisories as the preferred private reporting channel.
 
 
 ## [0.7.0] - 2026-05-28

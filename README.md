@@ -279,7 +279,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project p
 
 - [Discussions](https://github.com/P4ST4S/mcp-audit/discussions): questions, ideas, and design conversations
 - [Issues](https://github.com/P4ST4S/mcp-audit/issues): bug reports and concrete feature requests
-- Security: see [CONTRIBUTING.md](CONTRIBUTING.md#security-issues) for the private reporting channel
+- Security: see [SECURITY.md](SECURITY.md) for the private vulnerability reporting process
 
 ## License
 
