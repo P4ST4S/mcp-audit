@@ -3,6 +3,16 @@ proxy:
   upstream: "npx @modelcontextprotocol/server-filesystem /tmp"
   port: 4422
   upstream_timeout_ms: 30000
+  tls:
+    ca_file: ""
+    server_name: ""
+    insecure_skip_verify: false
+    client_cert_file: ""
+    client_key_file: ""
+  retry:
+    max_retries: 0
+    initial_interval_ms: 200
+    max_interval_ms: 2000
   client_id: "claude-desktop"
   server_id: "filesystem"
 

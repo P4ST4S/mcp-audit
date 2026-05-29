@@ -4,12 +4,16 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-29
+
 ### Added
 
 - `proxy.upstream_timeout_ms` config and `--upstream-timeout` flag for HTTP upstream request timeout (default 30s).
 - Cursor stdio configuration example under `examples/cursor/`.
 - Formal security disclosure policy in `SECURITY.md`, with GitHub Security Advisories as the preferred private reporting channel.
-
+- HTTP upstream TLS configuration, including custom CA bundles, server name override, local insecure verification, and optional mTLS client certificates.
+- Conservative HTTP upstream retry configuration, disabled by default and limited to safe JSON-RPC methods (`tools/call` is never retried).
+- Prometheus counter for HTTP upstream retry attempts by reason.
 
 ## [0.7.0] - 2026-05-28
 
@@ -99,7 +103,8 @@ All notable changes to mcp-audit are documented in this file.
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.5.0...v0.6.0

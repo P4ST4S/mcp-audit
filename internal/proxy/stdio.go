@@ -46,6 +46,7 @@ type StdioProxy struct {
 type proxyMetrics interface {
 	RecordPolicyDecision(action string)
 	RecordRateLimitRejection(clientID, toolName string)
+	RecordHTTPUpstreamRetry(reason string)
 }
 
 // NewStdioProxy creates a stdio proxy.

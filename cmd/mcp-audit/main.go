@@ -15,6 +15,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
+	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/metrics"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/otel"
@@ -29,8 +30,20 @@ type appConfig struct {
 		Upstream          string `mapstructure:"upstream"`
 		Port              int    `mapstructure:"port"`
 		UpstreamTimeoutMS int    `mapstructure:"upstream_timeout_ms"`
-		ClientID          string `mapstructure:"client_id"`
-		ServerID          string `mapstructure:"server_id"`
+		TLS               struct {
+			CAFile             string `mapstructure:"ca_file"`
+			ServerName         string `mapstructure:"server_name"`
+			InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
+			ClientCertFile     string `mapstructure:"client_cert_file"`
+			ClientKeyFile      string `mapstructure:"client_key_file"`
+		} `mapstructure:"tls"`
+		Retry struct {
+			MaxRetries        int `mapstructure:"max_retries"`
+			InitialIntervalMS int `mapstructure:"initial_interval_ms"`
+			MaxIntervalMS     int `mapstructure:"max_interval_ms"`
+		} `mapstructure:"retry"`
+		ClientID string `mapstructure:"client_id"`
+		ServerID string `mapstructure:"server_id"`
 	} `mapstructure:"proxy"`
 	Audit struct {
 		Storage    string `mapstructure:"storage"`
@@ -216,13 +229,25 @@ func main() {
 			Upstream:          config.Proxy.Upstream,
 			Port:              config.Proxy.Port,
 			UpstreamTimeoutMS: config.Proxy.UpstreamTimeoutMS,
-			Audit:             auditLogger,
-			Limiter:           limiter,
-			Policy:            policyEngine,
-			Log:               logger,
-			ClientID:          config.Proxy.ClientID,
-			ServerID:          config.Proxy.ServerID,
-			Metrics:           metricsRecorder,
+			TLS: httpclient.TLSConfig{
+				CAFile:             config.Proxy.TLS.CAFile,
+				ServerName:         config.Proxy.TLS.ServerName,
+				InsecureSkipVerify: config.Proxy.TLS.InsecureSkipVerify,
+				ClientCertFile:     config.Proxy.TLS.ClientCertFile,
+				ClientKeyFile:      config.Proxy.TLS.ClientKeyFile,
+			},
+			Retry: proxy.HTTPRetryConfig{
+				MaxRetries:        config.Proxy.Retry.MaxRetries,
+				InitialIntervalMS: config.Proxy.Retry.InitialIntervalMS,
+				MaxIntervalMS:     config.Proxy.Retry.MaxIntervalMS,
+			},
+			Audit:    auditLogger,
+			Limiter:  limiter,
+			Policy:   policyEngine,
+			Log:      logger,
+			ClientID: config.Proxy.ClientID,
+			ServerID: config.Proxy.ServerID,
+			Metrics:  metricsRecorder,
 		})
 		if err != nil {
 			logger.Error("failed to create http proxy", "error", err)
@@ -290,6 +315,14 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
 	v.SetDefault("proxy.port", 4422)
 	v.SetDefault("proxy.upstream_timeout_ms", proxy.DefaultHTTPUpstreamTimeoutMS)
+	v.SetDefault("proxy.tls.ca_file", "")
+	v.SetDefault("proxy.tls.server_name", "")
+	v.SetDefault("proxy.tls.insecure_skip_verify", false)
+	v.SetDefault("proxy.tls.client_cert_file", "")
+	v.SetDefault("proxy.tls.client_key_file", "")
+	v.SetDefault("proxy.retry.max_retries", 0)
+	v.SetDefault("proxy.retry.initial_interval_ms", 200)
+	v.SetDefault("proxy.retry.max_interval_ms", 2000)
 	v.SetDefault("proxy.client_id", "claude-desktop")
 	v.SetDefault("proxy.server_id", "filesystem")
 	v.SetDefault("audit.storage", "jsonl")
@@ -366,6 +399,12 @@ func validateConfig(config appConfig) error {
 	}
 	if config.Proxy.Transport == "http" && config.Proxy.UpstreamTimeoutMS <= 0 {
 		return fmt.Errorf("main: proxy.upstream_timeout_ms must be > 0")
+	}
+	if config.Proxy.Retry.MaxRetries < 0 {
+		return fmt.Errorf("main: proxy.retry.max_retries must be >= 0")
+	}
+	if (config.Proxy.TLS.ClientCertFile == "") != (config.Proxy.TLS.ClientKeyFile == "") {
+		return fmt.Errorf("main: proxy.tls.client_cert_file and proxy.tls.client_key_file must be configured together")
 	}
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")
