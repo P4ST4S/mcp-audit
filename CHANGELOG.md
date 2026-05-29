@@ -4,6 +4,11 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Cursor stdio configuration example under `examples/cursor/`.
+- Docker Compose observability example with Prometheus and Grafana under `examples/docker-compose-observability/`.
+
 ## [0.8.0] - 2026-05-29
 
 ### Added
