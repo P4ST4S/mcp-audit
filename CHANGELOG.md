@@ -12,7 +12,8 @@ All notable changes to mcp-audit are documented in this file.
 - Cursor stdio configuration example under `examples/cursor/`.
 - Formal security disclosure policy in `SECURITY.md`, with GitHub Security Advisories as the preferred private reporting channel.
 - HTTP upstream TLS configuration, including custom CA bundles, server name override, local insecure verification, and optional mTLS client certificates.
-- Conservative HTTP upstream retry configuration, disabled by default and limited to safe JSON-RPC methods.
+- Conservative HTTP upstream retry configuration, disabled by default and limited to safe JSON-RPC methods (`tools/call` is never retried).
+- Prometheus counter for HTTP upstream retry attempts by reason.
 
 ## [0.7.0] - 2026-05-28
 

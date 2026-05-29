@@ -196,6 +196,9 @@ func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Respo
 		if !p.shouldRetryUpstream(attempt, safeToRetry, tracker.bytesRead, resp, err) {
 			return resp, err
 		}
+		if p.config.Metrics != nil {
+			p.config.Metrics.RecordHTTPUpstreamRetry(upstreamRetryReason(resp, err))
+		}
 		if resp != nil && resp.Body != nil {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 			_ = resp.Body.Close()
@@ -514,4 +517,14 @@ func parseRetryAfter(value string) time.Duration {
 		}
 	}
 	return 0
+}
+
+func upstreamRetryReason(resp *http.Response, err error) string {
+	if err != nil {
+		return "network"
+	}
+	if resp == nil {
+		return "unknown"
+	}
+	return strconv.Itoa(resp.StatusCode)
 }
