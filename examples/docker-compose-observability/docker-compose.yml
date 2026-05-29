@@ -18,8 +18,8 @@ services:
                 self.end_headers()
                 self.wfile.write(data)
         http.server.HTTPServer(('',3000),H).serve_forever()
-    ports:
-      - "3000:3000"
+    # ports:
+    #   - "3000:3000"
 
   mcp-audit:
     build: ../..
