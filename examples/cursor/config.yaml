@@ -1,6 +1,5 @@
 # Cursor stdio example for routing an upstream MCP server through mcp-audit.
-# Copy this file next to the command you run, then edit proxy.upstream and the
-# identifiers below for your own upstream server.
+# Edit proxy.upstream and the identifiers below for your own upstream server.
 
 proxy:
   transport: stdio
@@ -11,7 +10,6 @@ proxy:
 audit:
   storage: jsonl
   path: ./cursor-audit.jsonl
-  sqlite_path: ./cursor-audit.db
   sign: true
   secret: ""
   async:
@@ -40,11 +38,11 @@ policy:
   rules: []
 
 dashboard:
-  enabled: true
+  enabled: false  # set to true to expose the read-only dashboard on :9090
   port: 9090
 
 metrics:
-  enabled: true
+  enabled: false  # set to true to expose Prometheus metrics on :9091
   port: 9091
   path: /metrics
   include_go_metrics: true

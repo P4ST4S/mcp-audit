@@ -3,7 +3,7 @@
 This example uses Cursor's `stdio` MCP transport to start `mcp-audit`, then
 lets `mcp-audit` launch the real upstream MCP server.
 
-1. Copy `examples/cursor/config.yaml` and edit `proxy.upstream`.
+1. Edit `examples/cursor/config.yaml` and set `proxy.upstream`.
 2. Set `AUDIT_SECRET` to a long random value before starting Cursor.
 3. Add this to `.cursor/mcp.json` in the Cursor project:
 
@@ -24,3 +24,6 @@ lets `mcp-audit` launch the real upstream MCP server.
 
 The example upstream points at the filesystem MCP server. Replace the placeholder
 path with a real directory before using it.
+
+If you copy `config.yaml` somewhere else, update the `--config` path in
+`.cursor/mcp.json` to match that location.
