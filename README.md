@@ -50,14 +50,33 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 
 ![mcp-audit demo](demo/mcp-audit-demo.gif)
 
-## Quick Start
+## Install
 
-Install Go, then build from source:
+Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-audit/releases):
 
 ```bash
-brew install go
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.2.0
+curl -L -o mcp-audit.tar.gz \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_linux_amd64.tar.gz
+curl -L -o mcp-audit_checksums.txt \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_v0.9.0_checksums.txt
+sha256sum -c mcp-audit_checksums.txt --ignore-missing
+tar -xzf mcp-audit.tar.gz
+./mcp-audit --version
 ```
+
+Run with Docker:
+
+```bash
+docker run --rm ghcr.io/p4st4s/mcp-audit:v0.9.0 --version
+```
+
+Or install with Go:
+
+```bash
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.9.0
+```
+
+## Quick Start
 
 Run in stdio mode:
 
@@ -155,6 +174,7 @@ CLI flags:
 --storage      jsonl | sqlite
 --no-dashboard disable the web dashboard
 --no-metrics   disable Prometheus metrics
+--version      print version and exit
 --log-level    debug | info | warn | error
 ```
 

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,12 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 	"github.com/spf13/viper"
+)
+
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
 )
 
 type appConfig struct {
@@ -116,12 +123,17 @@ type cliFlags struct {
 	storage     string
 	noDashboard bool
 	noMetrics   bool
+	version     bool
 	logLevel    string
 	set         map[string]bool
 }
 
 func main() {
 	flags := parseFlags()
+	if flags.version {
+		fmt.Println(versionString())
+		return
+	}
 	logger := newLogger(flags.logLevel)
 	config, err := loadConfig(flags)
 	if err != nil {
@@ -283,12 +295,44 @@ func parseFlags() cliFlags {
 	flag.StringVar(&flags.storage, "storage", "", "jsonl or sqlite")
 	flag.BoolVar(&flags.noDashboard, "no-dashboard", false, "disable dashboard")
 	flag.BoolVar(&flags.noMetrics, "no-metrics", false, "disable Prometheus metrics")
+	flag.BoolVar(&flags.version, "version", false, "print version and exit")
 	flag.StringVar(&flags.logLevel, "log-level", "info", "debug, info, warn, or error")
 	flag.Parse()
 	flag.Visit(func(f *flag.Flag) {
 		flags.set[f.Name] = true
 	})
 	return flags
+}
+
+func versionString() string {
+	resolvedVersion, resolvedCommit, resolvedDate := buildMetadata()
+	return fmt.Sprintf("mcp-audit %s (commit %s, built %s)", resolvedVersion, resolvedCommit, resolvedDate)
+}
+
+func buildMetadata() (string, string, string) {
+	resolvedVersion := version
+	resolvedCommit := commit
+	resolvedDate := date
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return resolvedVersion, resolvedCommit, resolvedDate
+	}
+	if (resolvedVersion == "" || resolvedVersion == "dev") && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		resolvedVersion = info.Main.Version
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			if resolvedCommit == "" || resolvedCommit == "unknown" {
+				resolvedCommit = setting.Value
+			}
+		case "vcs.time":
+			if resolvedDate == "" || resolvedDate == "unknown" {
+				resolvedDate = setting.Value
+			}
+		}
+	}
+	return resolvedVersion, resolvedCommit, resolvedDate
 }
 
 func loadConfig(flags cliFlags) (appConfig, error) {
