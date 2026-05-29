@@ -88,6 +88,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.transport` | `stdio` | Proxy transport: `stdio` or `http`. |
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
 | `proxy.port` | `4422` | HTTP listen port. |
+| `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
 | `proxy.client_id` | `claude-desktop` | Client identifier written to audit entries. |
 | `proxy.server_id` | `filesystem` | Server identifier written to audit entries. |
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |
@@ -135,6 +136,7 @@ CLI flags:
 --transport    stdio | http
 --upstream     upstream server command or URL
 --port         proxy port for http mode
+--upstream-timeout upstream HTTP request timeout in milliseconds
 --config       path to config.yaml
 --storage      jsonl | sqlite
 --no-dashboard disable the web dashboard
