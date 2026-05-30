@@ -1,1 +1,1 @@
-{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/tmp/hello.txt"}}}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fetch_url","arguments":{"url":"https://api.example.com/data","token":"sk-live-abc123secretXYZ"}}}

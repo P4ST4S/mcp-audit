@@ -1,0 +1,44 @@
+proxy:
+  transport: stdio
+  upstream: "bash demo/mock-upstream.sh"
+  client_id: "claude-desktop"
+  server_id: "filesystem"
+
+audit:
+  storage: jsonl
+  path: ./audit.jsonl
+  sign: true
+
+middleware:
+  rate_limit:
+    enabled: false
+    requests_per_minute: 60
+  redact:
+    enabled: true
+    patterns:
+      - password
+      - token
+      - secret
+      - api_key
+      - bearer
+      - authorization
+
+policy:
+  enabled: true
+  default_action: allow
+  rules:
+    - action: deny
+      tool_name: delete_file
+      reason: "Destructive filesystem operations are blocked"
+
+dashboard:
+  enabled: false
+  port: 9090
+
+metrics:
+  enabled: false
+  port: 9091
+  path: /metrics
+  include_go_metrics: false
+  include_process_metrics: false
+  tool_labels: true
