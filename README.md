@@ -2,6 +2,7 @@
 
 ![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)
 [![CI](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/P4ST4S/mcp-audit/graph/badge.svg)](https://codecov.io/gh/P4ST4S/mcp-audit)
 [![mcp-audit MCP server](https://glama.ai/mcp/servers/P4ST4S/mcp-audit/badges/score.svg)](https://glama.ai/mcp/servers/P4ST4S/mcp-audit)
 ![License](https://img.shields.io/badge/License-Apache--2.0-blue)
 ![Status](https://img.shields.io/badge/Status-beta-yellow)

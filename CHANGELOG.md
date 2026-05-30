@@ -4,6 +4,10 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Unit tests for the redact and ratelimit middleware (98% coverage).
+
 ### Fixed
 
 - `--version` output now includes the `v` prefix consistently across GoReleaser binaries and Docker images.
