@@ -75,3 +75,84 @@ func TestEngineDisabledAllowsRequests(t *testing.T) {
 		t.Fatal("disabled engine denied request")
 	}
 }
+
+func TestNewEngineRejectsInvalidDefaultAction(t *testing.T) {
+	_, err := NewEngine(Config{Enabled: true, DefaultAction: "maybe"})
+	if err == nil {
+		t.Fatal("expected error for invalid default_action")
+	}
+}
+
+func TestNewEngineRejectsInvalidRuleAction(t *testing.T) {
+	_, err := NewEngine(Config{
+		Enabled: true,
+		Rules:   []Rule{{Action: "permit", ToolName: "x"}},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid rule action")
+	}
+}
+
+func TestNewEngineDefaultsToAllowWhenDefaultActionEmpty(t *testing.T) {
+	engine, err := NewEngine(Config{Enabled: true})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	decision := engine.Evaluate(Request{ToolName: "anything"})
+	if !decision.Allowed {
+		t.Fatal("empty default_action should fall back to allow")
+	}
+}
+
+func TestNewEngineNormalizesActionCasing(t *testing.T) {
+	engine, err := NewEngine(Config{
+		Enabled:       true,
+		DefaultAction: "  DENY  ",
+		Rules: []Rule{
+			{Action: "Allow", ToolName: "read_file"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	if !engine.Evaluate(Request{ToolName: "read_file"}).Allowed {
+		t.Fatal("normalized 'Allow' rule should allow")
+	}
+	if engine.Evaluate(Request{ToolName: "other"}).Allowed {
+		t.Fatal("normalized 'DENY' default should deny")
+	}
+}
+
+func TestEvaluateNilEngineAllowsAll(t *testing.T) {
+	var e *Engine
+	if !e.Evaluate(Request{ToolName: "delete_file"}).Allowed {
+		t.Fatal("nil engine should allow all requests")
+	}
+}
+
+func TestEvaluateDenyRuleWithEmptyReasonUsesDefaultReason(t *testing.T) {
+	engine, err := NewEngine(Config{
+		Enabled: true,
+		Rules:   []Rule{{Action: ActionDeny, ToolName: "delete_file"}},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	decision := engine.Evaluate(Request{ToolName: "delete_file"})
+	if decision.Reason == "" {
+		t.Fatal("deny decision should have a non-empty reason even when rule reason is empty")
+	}
+}
+
+func TestEvaluateWildcardMatchesAnyValue(t *testing.T) {
+	engine, err := NewEngine(Config{
+		Enabled: true,
+		Rules:   []Rule{{Action: ActionDeny, ClientID: "*", ToolName: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	if engine.Evaluate(Request{ClientID: "any", ToolName: "any"}).Allowed {
+		t.Fatal("wildcard rule should deny any client/tool")
+	}
+}
