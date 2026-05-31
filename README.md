@@ -53,7 +53,14 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 
 ## Install
 
-Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-audit/releases):
+Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-audit/releases). Prebuilt archives are published for Linux (`amd64`, `arm64`), macOS (`amd64`, `arm64`), and Windows (`amd64`). Pick the archive that matches your OS and CPU architecture.
+
+> **Prerequisites**
+> - No runtime dependency for `mcp-audit` itself (statically linked, `CGO_ENABLED=0`).
+> - The stdio examples below launch an upstream MCP server via `npx`, which requires [Node.js](https://nodejs.org/) 18+ on `PATH`. This is only needed for the example upstream, not for `mcp-audit`.
+> - Windows binaries are published for `amd64` only. There is no `windows_arm64` build; on Windows on ARM, run the `amd64` binary under emulation or build from source with `go build ./cmd/mcp-audit`.
+
+### Linux
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
@@ -63,6 +70,70 @@ curl -L -o mcp-audit_checksums.txt \
 sha256sum -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
+```
+
+On 64-bit ARM Linux, replace `linux_amd64` with `linux_arm64`.
+
+Install it on your `PATH` (system-wide):
+
+```bash
+sudo install -m 0755 mcp-audit /usr/local/bin/mcp-audit
+mcp-audit --version
+```
+
+### macOS
+
+macOS ships `shasum` instead of `sha256sum`. Use `darwin_arm64` for Apple Silicon (M1/M2/M3) and `darwin_amd64` for Intel Macs.
+
+```bash
+curl -L -o mcp-audit.tar.gz \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_darwin_arm64.tar.gz
+curl -L -o mcp-audit_checksums.txt \
+  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
+shasum -a 256 -c mcp-audit_checksums.txt --ignore-missing
+tar -xzf mcp-audit.tar.gz
+./mcp-audit --version
+```
+
+macOS Gatekeeper may quarantine the downloaded binary. If it is blocked, clear the quarantine attribute:
+
+```bash
+xattr -d com.apple.quarantine ./mcp-audit
+```
+
+Install it on your `PATH`:
+
+```bash
+sudo install -m 0755 mcp-audit /usr/local/bin/mcp-audit
+mcp-audit --version
+```
+
+### Windows
+
+Windows builds are published as a `.zip` archive containing `mcp-audit.exe`. The following uses PowerShell:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_windows_amd64.zip" -OutFile "mcp-audit.zip"
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt" -OutFile "mcp-audit_checksums.txt"
+
+# Verify the checksum and fail if it does not match
+$expected = ((Select-String -Path mcp-audit_checksums.txt -Pattern "windows_amd64.zip").Line -split '\s+')[0].ToLower()
+$actual   = (Get-FileHash -Algorithm SHA256 mcp-audit.zip).Hash.ToLower()
+if ($actual -ne $expected) { throw "Checksum mismatch: expected $expected, got $actual" }
+
+Expand-Archive -Path mcp-audit.zip -DestinationPath . -Force
+.\mcp-audit.exe --version
+```
+
+To make `mcp-audit` available in every new terminal, move `mcp-audit.exe` to a directory on your `PATH` (for example a per-user tools folder), then add it to the user `PATH`:
+
+```powershell
+$dest = "$env:LOCALAPPDATA\Programs\mcp-audit"
+New-Item -ItemType Directory -Force -Path $dest | Out-Null
+Move-Item -Force .\mcp-audit.exe "$dest\mcp-audit.exe"
+[Environment]::SetEnvironmentVariable("Path", [Environment]::GetEnvironmentVariable("Path", "User") + ";$dest", "User")
+# Open a new terminal, then:
+mcp-audit --version
 ```
 
 Run with Docker:
@@ -84,6 +155,13 @@ Run in stdio mode:
 ```bash
 AUDIT_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem /tmp"
+```
+
+On Windows PowerShell, generate the secret and set it as an environment variable:
+
+```powershell
+$env:AUDIT_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+.\mcp-audit.exe --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem C:\Temp"
 ```
 
 Run in HTTP mode:
