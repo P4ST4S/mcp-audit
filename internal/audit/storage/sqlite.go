@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
@@ -17,6 +18,7 @@ import (
 // SQLiteStore persists audit entries in a local SQLite database.
 type SQLiteStore struct {
 	db *sql.DB
+	mu sync.Mutex
 }
 
 // NewSQLiteStore opens path and initializes the audit schema.
@@ -83,6 +85,8 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
