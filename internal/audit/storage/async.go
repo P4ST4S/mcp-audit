@@ -90,6 +90,15 @@ func (s *AsyncStore) Append(entry audit.Entry) error {
 	}
 	s.closeMu.RLock()
 	defer s.closeMu.RUnlock()
+	// Check done under the read lock so we never send on a closed channel.
+	select {
+	case <-s.done:
+		if err := s.currentErr(); err != nil {
+			return err
+		}
+		return fmt.Errorf("audit: async: append after close")
+	default:
+	}
 	select {
 	case s.entries <- entry:
 		s.updateQueueMetrics()
@@ -108,11 +117,6 @@ func (s *AsyncStore) Append(entry audit.Entry) error {
 			}
 			return fmt.Errorf("audit: async: append after close")
 		}
-	case <-s.done:
-		if err := s.currentErr(); err != nil {
-			return err
-		}
-		return fmt.Errorf("audit: async: append after close")
 	}
 }
 
