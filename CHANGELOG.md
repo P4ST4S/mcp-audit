@@ -8,6 +8,7 @@ All notable changes to mcp-audit are documented in this file.
 
 - Unit tests for the redact and ratelimit middleware (98% coverage).
 - Unit tests for `internal/audit/storage` (jsonl, sqlite, instrumented) and extended coverage for the async store. Package coverage went from 27% to 80%.
+- Unit tests for `internal/dashboard` covering all HTTP routes, query filter parsing, lifecycle, and the routing mux. Package coverage went from 0% to 95%.
 
 ### Fixed
 
