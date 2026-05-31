@@ -4,11 +4,18 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-31
+
 ### Added
 
+- `STABILITY.md` documenting the semver policy, stable surface (config, CLI, audit JSON schema, signature field set, Prometheus metric names, OTLP `mcp_audit.*` attributes, dashboard API, JSON-RPC error codes), deprecation process (one MINOR window minimum), and support window (latest MINOR + 90-day grace on MAJOR bump).
 - Unit tests for the redact and ratelimit middleware (98% coverage).
 - Unit tests for `internal/audit/storage` (jsonl, sqlite, instrumented) and extended coverage for the async store. Package coverage went from 27% to 80%.
 - Unit tests for `internal/dashboard` covering all HTTP routes, query filter parsing, lifecycle, and the routing mux. Package coverage went from 0% to 95%.
+
+### Changed
+
+- Project status moved from `beta` to `stable`. The README badge and CONTRIBUTING reference STABILITY.md.
 
 ### Fixed
 
@@ -129,7 +136,8 @@ All notable changes to mcp-audit are documented in this file.
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.6.1...v0.7.0

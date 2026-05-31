@@ -1,6 +1,6 @@
 # Contributing to mcp-audit
 
-Contributions are welcome. This is a beta project - keep changes focused and the scope small.
+Contributions are welcome. Keep changes focused and the scope small. Stability guarantees are documented in [STABILITY.md](STABILITY.md).
 
 ## Getting started
 
