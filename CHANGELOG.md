@@ -7,10 +7,13 @@ All notable changes to mcp-audit are documented in this file.
 ### Added
 
 - Unit tests for the redact and ratelimit middleware (98% coverage).
+- Unit tests for `internal/audit/storage` (jsonl, sqlite, instrumented) and extended coverage for the async store. Package coverage went from 27% to 80%.
 
 ### Fixed
 
 - `--version` output now includes the `v` prefix consistently across GoReleaser binaries and Docker images.
+- `SQLiteStore.AppendBatch` could corrupt or lose entries when called concurrently from multiple goroutines. The batch transaction is now serialized with a mutex.
+- `AsyncStore.Append` could panic with "send on closed channel" if `Close()` was called concurrently with a write. The send path now coordinates with the close path under the existing lock.
 
 ## [0.9.0] - 2026-05-29
 
