@@ -61,7 +61,7 @@ func TestStatusCodeClassifierRetriesOnlyConfiguredStatuses(t *testing.T) {
 func TestPolicyCanRetryHonorsMaxRetriesAndClassifier(t *testing.T) {
 	policy := Policy{
 		MaxRetries: 2,
-		Classifier: StatusCodeClassifier(
+		ShouldRetry: StatusCodeClassifier(
 			http.StatusTooManyRequests,
 			http.StatusServiceUnavailable,
 		),

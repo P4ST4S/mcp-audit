@@ -255,7 +255,7 @@ func (e *Exporter) exportPayload(payload []byte, spans int) {
 			}
 			return
 		}
-		retryable := retryPolicy.ShouldRetry(status, err)
+		retryable := retryPolicy.IsRetryable(status, err)
 		finalAttempt := attempt == attempts-1
 		if !retryable || finalAttempt {
 			statusLabel := "error"
@@ -290,7 +290,7 @@ func (e *Exporter) retryPolicy() retry.Policy {
 		InitialInterval: time.Duration(e.config.RetryInitialMS) * time.Millisecond,
 		MaxInterval:     time.Duration(e.config.RetryMaxMS) * time.Millisecond,
 		Multiplier:      2,
-		Classifier:      retry.ShouldRetry,
+		ShouldRetry:     retry.ShouldRetry,
 	}
 }
 

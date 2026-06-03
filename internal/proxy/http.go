@@ -186,6 +186,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
 	safeToRetry := p.safeToRetry(r.Method, body)
 	retryPolicy := p.retryPolicy()
+	backoffAttempt := 0
 	for attempt := 0; ; attempt++ {
 		tracker := &trackingReader{reader: bytes.NewReader(body)}
 		upstreamReq, err := p.newUpstreamRequest(r, tracker)
@@ -203,9 +204,13 @@ func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Respo
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 			_ = resp.Body.Close()
 		}
-		delay := retryPolicy.Delay(attempt, responseRetryAfter(resp))
+		retryAfter := responseRetryAfter(resp)
+		delay := retryPolicy.Delay(backoffAttempt, retryAfter)
 		if delay <= 0 {
 			delay = retryPolicy.InitialInterval
+		}
+		if retryAfter <= 0 {
+			backoffAttempt++
 		}
 		p.log.Warn("retrying upstream request", "attempt", attempt+1, "delay_ms", delay.Milliseconds())
 		select {
@@ -222,7 +227,7 @@ func (p *HTTPProxy) retryPolicy() retry.Policy {
 		InitialInterval: time.Duration(p.config.Retry.InitialIntervalMS) * time.Millisecond,
 		MaxInterval:     time.Duration(p.config.Retry.MaxIntervalMS) * time.Millisecond,
 		Multiplier:      2,
-		Classifier: retry.StatusCodeClassifier(
+		ShouldRetry: retry.StatusCodeClassifier(
 			http.StatusTooManyRequests,
 			http.StatusServiceUnavailable,
 		),

@@ -16,8 +16,10 @@ type Policy struct {
 	MaxRetries      int
 	InitialInterval time.Duration
 	MaxInterval     time.Duration
-	Multiplier      float64
-	Classifier      Classifier
+	// Multiplier is the exponential backoff base. It defaults to 2 when <= 1.
+	Multiplier float64
+	// ShouldRetry classifies a response status or request error. It defaults to retry.ShouldRetry.
+	ShouldRetry Classifier
 }
 
 // CanRetry reports whether attempt can be retried under the policy.
@@ -25,12 +27,12 @@ func (p Policy) CanRetry(attempt int, status int, err error) bool {
 	if p.MaxRetries <= 0 || attempt >= p.MaxRetries {
 		return false
 	}
-	return p.ShouldRetry(status, err)
+	return p.IsRetryable(status, err)
 }
 
-// ShouldRetry reports whether a status or error is retryable under the policy classifier.
-func (p Policy) ShouldRetry(status int, err error) bool {
-	classifier := p.Classifier
+// IsRetryable reports whether a status or error is retryable under the policy classifier.
+func (p Policy) IsRetryable(status int, err error) bool {
+	classifier := p.ShouldRetry
 	if classifier == nil {
 		classifier = ShouldRetry
 	}
