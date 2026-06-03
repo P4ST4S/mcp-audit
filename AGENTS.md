@@ -61,12 +61,16 @@ These are non-negotiable design rules. A PR that violates one needs an exception
 
 ## PR expectations
 
-- One concern per PR. If a change touches storage AND adds a new policy feature, split it.
-- Use conventional commit prefixes: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, `build:`. Scope optional: `fix(storage): ...`.
-- Update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]` when the change is user-visible. Internal refactors and tests don't require a changelog entry. If unsure, ask in the PR.
-- Update tests in the same PR as the code change. A PR that adds a feature without tests will be sent back.
-- Include a short test plan in the PR description if you changed runtime behavior. Reference the manual smoke test if the change affects something the test suite doesn't cover.
-- Sign commits if you can (`git config commit.gpgsign true`). Not required.
+See [CONTRIBUTING.md → Pull request conventions](CONTRIBUTING.md#pull-request-conventions) for the full conventions (branch names, commit format, CHANGELOG, merge strategy, review etiquette). Short version for agents:
+
+- **One concern per PR.** If a change touches storage AND adds a new policy feature, split it.
+- **Conventional Commits**: `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, `build:`, `perf:`. Scope optional but encouraged: `fix(storage): ...`.
+- **Branch name**: suggested `type/short-description-issue`, e.g. `fix/storage-race-42`.
+- **Update tests in the same PR as the code change.** A PR that adds a feature without tests will be sent back.
+- **Update [CHANGELOG.md](CHANGELOG.md) under `[Unreleased]`** when the change is user-visible. Internal refactors and test-only PRs don't require an entry.
+- **Fill the PR template** ([`.github/pull_request_template.md`](.github/pull_request_template.md)). Summary and test plan are the two sections reviewers actually read first.
+- **Flag stability impact** in the PR description if you touched any surface listed in [STABILITY.md](STABILITY.md).
+- **Merge strategy: merge commit, not squash.** Keep your commits clean before requesting review (rebase `wip` / `oops` sequences into meaningful commits).
 
 ## Security
 
