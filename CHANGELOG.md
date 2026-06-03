@@ -8,6 +8,10 @@ All notable changes to mcp-audit are documented in this file.
 
 - Continue stdio configuration example under `examples/continue/`.
 
+### Changed
+
+- Pin the Go toolchain to `go1.22.12` in `go.mod` for reproducible contributor and CI builds.
+
 ## [1.0.0] - 2026-05-31
 
 ### Added
