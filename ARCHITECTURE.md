@@ -11,6 +11,11 @@ traffic unless a configured policy or rate-limit rule intentionally rejects a
 request. The durable evidence artifact is the signed audit row in JSONL or
 SQLite; Prometheus metrics and OTLP spans are operational telemetry.
 
+This document describes `mcp-audit` as of `v1.0.0`. File and line references
+are accurate at the time of writing; function and package names are part of
+the [stable surface](STABILITY.md), line numbers will drift as the code
+evolves.
+
 ## Runtime Shape
 
 ```mermaid
@@ -104,7 +109,7 @@ schema and serializes batch transactions with a mutex
 `AsyncStore` adds a bounded channel, batching, flush requests and sticky error
 handling around any `audit.Store` (`internal/audit/storage/async.go:36`).
 `InstrumentedStore` wraps writes with storage metrics without changing the
-underlying store contract (`internal/audit/storage/instrumented.go:14`).
+wrapped store's behavior (`internal/audit/storage/instrumented.go:14`).
 
 `internal/policy/` is a synchronous allow/deny engine for `tools/call`. Rules
 match client ID, server ID and tool name with exact values, wildcard `*`, or
@@ -114,10 +119,11 @@ stable JSON-RPC error in `internal/proxy/policy.go`.
 
 `internal/middleware/` contains request-local protections. `RateLimiter` builds
 one token bucket per `(client_id, tool_name)` under a mutex-protected map
-(`internal/middleware/ratelimit.go:11`). `Redactor` walks decoded JSON and
-replaces sensitive values when object keys contain configured case-insensitive
-fragments such as `token`, `secret`, or `authorization`
-(`internal/middleware/redact.go:8`, `internal/middleware/redact.go:32`).
+(`internal/middleware/ratelimit.go:11`). `Redactor` unmarshals the payload to a
+`map[string]any` tree, walks it, and replaces sensitive values when object keys
+contain configured case-insensitive fragments such as `token`, `secret`, or
+`authorization` (`internal/middleware/redact.go:8`,
+`internal/middleware/redact.go:32`).
 
 `internal/metrics/` owns Prometheus instrumentation and serving. The
 `Recorder` interface is intentionally broad enough for proxy, audit, storage,
