@@ -20,6 +20,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
+	"github.com/P4ST4S/mcp-audit/internal/retry"
 )
 
 const (
@@ -241,9 +242,9 @@ func (e *Exporter) flush(entries []audit.Entry) {
 }
 
 func (e *Exporter) exportPayload(payload []byte, spans int) {
-	backoff := time.Duration(e.config.RetryInitialMS) * time.Millisecond
-	maxBackoff := time.Duration(e.config.RetryMaxMS) * time.Millisecond
+	retryPolicy := e.retryPolicy()
 	attempts := e.config.MaxRetries + 1
+	backoffAttempt := 0
 	for attempt := 0; attempt < attempts; attempt++ {
 		startedAt := time.Now()
 		status, retryAfter, body, err := e.postPayload(payload)
@@ -254,7 +255,7 @@ func (e *Exporter) exportPayload(payload []byte, spans int) {
 			}
 			return
 		}
-		retryable := isRetryable(status, err)
+		retryable := retryPolicy.IsRetryable(status, err)
 		finalAttempt := attempt == attempts-1
 		if !retryable || finalAttempt {
 			statusLabel := "error"
@@ -275,18 +276,21 @@ func (e *Exporter) exportPayload(payload []byte, spans int) {
 		if e.metrics != nil {
 			e.metrics.RecordOTelExport("retry", duration, spans)
 		}
-		delay := retryAfter
-		if delay <= 0 {
-			delay = backoff
-			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-		if delay > maxBackoff {
-			delay = maxBackoff
+		delay := retryPolicy.Delay(backoffAttempt, retryAfter)
+		if retryAfter <= 0 {
+			backoffAttempt++
 		}
 		time.Sleep(delay)
+	}
+}
+
+func (e *Exporter) retryPolicy() retry.Policy {
+	return retry.Policy{
+		MaxRetries:      e.config.MaxRetries,
+		InitialInterval: time.Duration(e.config.RetryInitialMS) * time.Millisecond,
+		MaxInterval:     time.Duration(e.config.RetryMaxMS) * time.Millisecond,
+		Multiplier:      2,
+		ShouldRetry:     retry.ShouldRetry,
 	}
 }
 
@@ -311,7 +315,7 @@ func (e *Exporter) postPayload(payload []byte) (int, time.Duration, string, erro
 		return resp.StatusCode, 0, "", nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return resp.StatusCode, retryAfter(resp.Header.Get("Retry-After")), string(body), nil
+	return resp.StatusCode, retry.ParseRetryAfter(resp.Header.Get("Retry-After")), string(body), nil
 }
 
 func (e *Exporter) requestBody(entries []audit.Entry) ([]byte, error) {
@@ -454,35 +458,6 @@ func newHTTPClient(config Config) (*http.Client, error) {
 		return nil, fmt.Errorf("otel: %w", err)
 	}
 	return client, nil
-}
-
-func retryAfter(value string) time.Duration {
-	if value == "" {
-		return 0
-	}
-	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		delay := time.Until(when)
-		if delay > 0 {
-			return delay
-		}
-	}
-	return 0
-}
-
-func isRetryable(status int, err error) bool {
-	if err != nil {
-		return true
-	}
-	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests {
-		return true
-	}
-	if status >= http.StatusInternalServerError && status != http.StatusNotImplemented {
-		return true
-	}
-	return false
 }
 
 func upstreamAddress(upstream string) (string, int) {
