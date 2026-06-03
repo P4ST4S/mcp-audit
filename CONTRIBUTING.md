@@ -115,6 +115,8 @@ for approachable starting points.
 
 ## Project layout
 
+For a narrative view of how these packages fit together at runtime, read [ARCHITECTURE.md](ARCHITECTURE.md).
+
 - `cmd/mcp-audit/` - CLI entry point and config loading
 - `internal/proxy/` - stdio and HTTP MCP proxies
 - `internal/audit/` - entry types, signing, JSONL and SQLite storage backends

@@ -10,6 +10,8 @@
 
 A drop-in security and observability proxy for MCP servers. `mcp-audit` sits between an MCP client and any upstream MCP server to produce signed audit trails, redact sensitive payloads, enforce allow/deny policies and per-tool rate limits, and expose a local read-only dashboard.
 
+For a contributor-oriented map of the runtime, package boundaries, concurrency model, and design invariants, see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Why mcp-audit?
 
 [The MCP 2026 roadmap](https://modelcontextprotocol.io/development/roadmap) calls out enterprise needs around audit trails, gateway patterns, and operational visibility. `mcp-audit` fills that gap as a deployable sidecar or local wrapper: it sits between any MCP client and server, preserves protocol traffic, and records signed audit entries for tool calls, resource reads, prompt requests, and all other JSON-RPC methods.
