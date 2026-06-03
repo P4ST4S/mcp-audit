@@ -20,6 +20,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
+	"github.com/P4ST4S/mcp-audit/internal/retry"
 )
 
 // DefaultHTTPUpstreamTimeoutMS is the default timeout for HTTP upstream requests.
@@ -184,8 +185,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
 	safeToRetry := p.safeToRetry(r.Method, body)
-	backoff := time.Duration(p.config.Retry.InitialIntervalMS) * time.Millisecond
-	maxBackoff := time.Duration(p.config.Retry.MaxIntervalMS) * time.Millisecond
+	retryPolicy := p.retryPolicy()
 	for attempt := 0; ; attempt++ {
 		tracker := &trackingReader{reader: bytes.NewReader(body)}
 		upstreamReq, err := p.newUpstreamRequest(r, tracker)
@@ -193,7 +193,7 @@ func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Respo
 			return nil, err
 		}
 		resp, err := p.client.Do(upstreamReq)
-		if !p.shouldRetryUpstream(attempt, safeToRetry, tracker.bytesRead, resp, err) {
+		if !p.shouldRetryUpstream(retryPolicy, attempt, safeToRetry, tracker.bytesRead, resp, err) {
 			return resp, err
 		}
 		if p.config.Metrics != nil {
@@ -203,13 +203,9 @@ func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Respo
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
 			_ = resp.Body.Close()
 		}
-		delay := retryDelay(resp, backoff, maxBackoff)
+		delay := retryPolicy.Delay(attempt, responseRetryAfter(resp))
 		if delay <= 0 {
-			delay = backoff
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+			delay = retryPolicy.InitialInterval
 		}
 		p.log.Warn("retrying upstream request", "attempt", attempt+1, "delay_ms", delay.Milliseconds())
 		select {
@@ -217,6 +213,19 @@ func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Respo
 		case <-r.Context().Done():
 			return nil, r.Context().Err()
 		}
+	}
+}
+
+func (p *HTTPProxy) retryPolicy() retry.Policy {
+	return retry.Policy{
+		MaxRetries:      p.config.Retry.MaxRetries,
+		InitialInterval: time.Duration(p.config.Retry.InitialIntervalMS) * time.Millisecond,
+		MaxInterval:     time.Duration(p.config.Retry.MaxIntervalMS) * time.Millisecond,
+		Multiplier:      2,
+		Classifier: retry.StatusCodeClassifier(
+			http.StatusTooManyRequests,
+			http.StatusServiceUnavailable,
+		),
 	}
 }
 
@@ -237,17 +246,18 @@ func (p *HTTPProxy) newUpstreamRequest(r *http.Request, body io.Reader) (*http.R
 	return upstreamReq, nil
 }
 
-func (p *HTTPProxy) shouldRetryUpstream(attempt int, safeToRetry bool, bodyBytesRead int64, resp *http.Response, err error) bool {
-	if p.config.Retry.MaxRetries <= 0 || attempt >= p.config.Retry.MaxRetries || !safeToRetry {
+func (p *HTTPProxy) shouldRetryUpstream(policy retry.Policy, attempt int, safeToRetry bool, bodyBytesRead int64, resp *http.Response, err error) bool {
+	if !safeToRetry {
 		return false
 	}
-	if err != nil {
-		return bodyBytesRead == 0
-	}
-	if resp == nil {
+	if err != nil && bodyBytesRead != 0 {
 		return false
 	}
-	return resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	return policy.CanRetry(attempt, status, err)
 }
 
 func (p *HTTPProxy) safeToRetry(method string, body []byte) bool {
@@ -490,33 +500,11 @@ func safeJSONRPCMethod(method string) bool {
 	}
 }
 
-func retryDelay(resp *http.Response, fallback, maxDelay time.Duration) time.Duration {
-	delay := fallback
-	if resp != nil {
-		if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
-			delay = retryAfter
-		}
-	}
-	if maxDelay > 0 && delay > maxDelay {
-		delay = maxDelay
-	}
-	return delay
-}
-
-func parseRetryAfter(value string) time.Duration {
-	if value == "" {
+func responseRetryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
 		return 0
 	}
-	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
-		return time.Duration(seconds) * time.Second
-	}
-	if when, err := http.ParseTime(value); err == nil {
-		delay := time.Until(when)
-		if delay > 0 {
-			return delay
-		}
-	}
-	return 0
+	return retry.ParseRetryAfter(resp.Header.Get("Retry-After"))
 }
 
 func upstreamRetryReason(resp *http.Response, err error) string {
