@@ -6,6 +6,13 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -130,6 +137,113 @@ func TestExporterPostsOTLPHTTPJSON(t *testing.T) {
 	}
 }
 
+func TestNewExporterAppliesDefaultsAndNormalization(t *testing.T) {
+	exporter, err := NewExporter(Config{
+		Endpoint:        "http://collector.local/custom",
+		ServiceName:     "",
+		QueueSize:       -1,
+		BatchSize:       -1,
+		FlushIntervalMS: -1,
+		TimeoutMS:       -1,
+		MaxRetries:      -1,
+		RetryInitialMS:  -1,
+		RetryMaxMS:      1,
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+
+	if exporter.config.ServiceName != defaultServiceName {
+		t.Fatalf("service name = %q, want %q", exporter.config.ServiceName, defaultServiceName)
+	}
+	if cap(exporter.entries) != defaultQueueSize {
+		t.Fatalf("queue capacity = %d, want %d", cap(exporter.entries), defaultQueueSize)
+	}
+	if exporter.config.BatchSize != defaultBatchSize {
+		t.Fatalf("batch size = %d, want %d", exporter.config.BatchSize, defaultBatchSize)
+	}
+	if exporter.config.FlushIntervalMS != defaultFlushIntervalMS {
+		t.Fatalf("flush interval = %d, want %d", exporter.config.FlushIntervalMS, defaultFlushIntervalMS)
+	}
+	if exporter.config.TimeoutMS != defaultTimeoutMS {
+		t.Fatalf("timeout = %d, want %d", exporter.config.TimeoutMS, defaultTimeoutMS)
+	}
+	if exporter.config.MaxRetries != 0 {
+		t.Fatalf("max retries = %d, want 0", exporter.config.MaxRetries)
+	}
+	if exporter.config.RetryInitialMS != defaultRetryInitialMS {
+		t.Fatalf("retry initial = %d, want %d", exporter.config.RetryInitialMS, defaultRetryInitialMS)
+	}
+	if exporter.config.RetryMaxMS != defaultRetryInitialMS {
+		t.Fatalf("retry max = %d, want %d", exporter.config.RetryMaxMS, defaultRetryInitialMS)
+	}
+	if exporter.endpoint != "http://collector.local/custom/v1/traces" {
+		t.Fatalf("endpoint = %q", exporter.endpoint)
+	}
+}
+
+func TestNewExporterRejectsInvalidEndpoint(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "parse error", endpoint: "http://%zz"},
+		{name: "missing scheme", endpoint: "collector.local:4318"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewExporter(Config{
+				Endpoint:        tc.endpoint,
+				ServiceName:     "mcp-audit-test",
+				QueueSize:       1,
+				BatchSize:       1,
+				FlushIntervalMS: 10000,
+			})
+			if err == nil {
+				t.Fatal("expected endpoint error")
+			}
+		})
+	}
+}
+
+func TestExportAuditEntryEdgeCases(t *testing.T) {
+	var nilExporter *Exporter
+	if err := nilExporter.ExportAuditEntry(audit.Entry{Method: "tools/call"}); err != nil {
+		t.Fatalf("nil exporter error = %v, want nil", err)
+	}
+
+	metrics := &recordingMetrics{}
+	exporter := &Exporter{
+		entries: make(chan audit.Entry, 1),
+		metrics: metrics,
+	}
+	if err := exporter.ExportAuditEntry(audit.Entry{Method: "ping"}); err != nil {
+		t.Fatalf("non tools/call export error = %v", err)
+	}
+	if len(exporter.entries) != 0 {
+		t.Fatalf("non tools/call queued entries = %d, want 0", len(exporter.entries))
+	}
+	if err := exporter.ExportAuditEntry(audit.Entry{Method: "tools/call"}); err != nil {
+		t.Fatalf("first export error = %v", err)
+	}
+	if got := metrics.queueDepthValue(); got != 1 {
+		t.Fatalf("queue depth = %d, want 1", got)
+	}
+	if err := exporter.ExportAuditEntry(audit.Entry{Method: "tools/call"}); err == nil {
+		t.Fatal("expected queue full error")
+	}
+	if got := metrics.dropReasonsSnapshot(); len(got) != 1 || got[0] != "queue_full" {
+		t.Fatalf("drop reasons = %v, want [queue_full]", got)
+	}
+
+	closedExporter := &Exporter{entries: make(chan audit.Entry, 1)}
+	closedExporter.closed.Store(true)
+	if err := closedExporter.ExportAuditEntry(audit.Entry{Method: "tools/call"}); err == nil {
+		t.Fatal("expected closed exporter error")
+	}
+}
+
 func TestExporterAddsConfiguredHeaders(t *testing.T) {
 	called := false
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -213,11 +327,11 @@ func TestExporterRetriesRetryableOTLPFailures(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
 	}
-	if got := metrics.exportStatuses; len(got) != 2 || got[0] != "retry" || got[1] != "ok" {
+	if got := metrics.exportStatusesSnapshot(); len(got) != 2 || got[0] != "retry" || got[1] != "ok" {
 		t.Fatalf("export statuses = %v, want [retry ok]", got)
 	}
-	if len(metrics.dropReasons) != 0 {
-		t.Fatalf("drop reasons = %v, want none", metrics.dropReasons)
+	if got := metrics.dropReasonsSnapshot(); len(got) != 0 {
+		t.Fatalf("drop reasons = %v, want none", got)
 	}
 }
 
@@ -254,11 +368,275 @@ func TestExporterDoesNotRetryPermanentOTLPFailures(t *testing.T) {
 	if attempts != 1 {
 		t.Fatalf("attempts = %d, want 1", attempts)
 	}
-	if got := metrics.exportStatuses; len(got) != 1 || got[0] != "permanent_error" {
+	if got := metrics.exportStatusesSnapshot(); len(got) != 1 || got[0] != "permanent_error" {
 		t.Fatalf("export statuses = %v, want [permanent_error]", got)
 	}
-	if got := metrics.dropReasons; len(got) != 1 || got[0] != "permanent_error" {
+	if got := metrics.dropReasonsSnapshot(); len(got) != 1 || got[0] != "permanent_error" {
 		t.Fatalf("drop reasons = %v, want [permanent_error]", got)
+	}
+}
+
+func TestExporterRecordsDropAfterRetryExhaustion(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		http.Error(w, "collector unavailable", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	metrics := &recordingMetrics{}
+	exporter, err := NewExporter(Config{
+		Endpoint:        ts.URL,
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		MaxRetries:      2,
+		RetryInitialMS:  1,
+		RetryMaxMS:      1,
+		Metrics:         metrics,
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+
+	exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 3)
+
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("attempts = %d, want 3", got)
+	}
+	wantStatuses := []string{"retry", "retry", "error"}
+	if got := metrics.exportStatusesSnapshot(); !slices.Equal(got, wantStatuses) {
+		t.Fatalf("export statuses = %v, want %v", got, wantStatuses)
+	}
+	if got := metrics.dropReasonsSnapshot(); len(got) != 1 || got[0] != "error" {
+		t.Fatalf("drop reasons = %v, want [error]", got)
+	}
+}
+
+func TestExporterParsesRetryAfterHeader(t *testing.T) {
+	future := time.Now().UTC().Add(2 * time.Second).Format(http.TimeFormat)
+	cases := []struct {
+		name       string
+		header     string
+		wantExact  time.Duration
+		wantFuture bool
+	}{
+		{name: "seconds", header: "1", wantExact: time.Second},
+		{name: "future http date", header: future, wantFuture: true},
+		{name: "past http date", header: time.Now().UTC().Add(-time.Second).Format(http.TimeFormat), wantExact: 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", tc.header)
+				http.Error(w, "retry later", http.StatusServiceUnavailable)
+			}))
+			defer ts.Close()
+
+			exporter, err := NewExporter(Config{
+				Endpoint:        ts.URL,
+				ServiceName:     "mcp-audit-test",
+				QueueSize:       1,
+				BatchSize:       1,
+				FlushIntervalMS: 10000,
+			})
+			if err != nil {
+				t.Fatalf("new exporter: %v", err)
+			}
+			defer exporter.Close(context.Background())
+
+			status, retryAfter, _, err := exporter.postPayload([]byte(`{"resourceSpans":[]}`))
+			if err != nil {
+				t.Fatalf("post payload: %v", err)
+			}
+			if status != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", status, http.StatusServiceUnavailable)
+			}
+			if tc.wantFuture {
+				if retryAfter <= 0 || retryAfter > 2*time.Second {
+					t.Fatalf("retryAfter = %s, want positive duration up to 2s", retryAfter)
+				}
+				return
+			}
+			if retryAfter != tc.wantExact {
+				t.Fatalf("retryAfter = %s, want %s", retryAfter, tc.wantExact)
+			}
+		})
+	}
+}
+
+func TestExporterClassifiesPermanentAndRetryableStatuses(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       int
+		wantAttempts int32
+		wantStatuses []string
+		wantDrops    []string
+	}{
+		{name: "bad request", status: http.StatusBadRequest, wantAttempts: 1, wantStatuses: []string{"permanent_error"}, wantDrops: []string{"permanent_error"}},
+		{name: "not found", status: http.StatusNotFound, wantAttempts: 1, wantStatuses: []string{"permanent_error"}, wantDrops: []string{"permanent_error"}},
+		{name: "not implemented", status: http.StatusNotImplemented, wantAttempts: 1, wantStatuses: []string{"permanent_error"}, wantDrops: []string{"permanent_error"}},
+		{name: "request timeout", status: http.StatusRequestTimeout, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+		{name: "too many requests", status: http.StatusTooManyRequests, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+		{name: "internal server error", status: http.StatusInternalServerError, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+		{name: "bad gateway", status: http.StatusBadGateway, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+		{name: "service unavailable", status: http.StatusServiceUnavailable, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+		{name: "gateway timeout", status: http.StatusGatewayTimeout, wantAttempts: 2, wantStatuses: []string{"retry", "error"}, wantDrops: []string{"error"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				http.Error(w, http.StatusText(tc.status), tc.status)
+			}))
+			defer ts.Close()
+
+			metrics := &recordingMetrics{}
+			exporter, err := NewExporter(Config{
+				Endpoint:        ts.URL,
+				ServiceName:     "mcp-audit-test",
+				QueueSize:       1,
+				BatchSize:       1,
+				FlushIntervalMS: 10000,
+				MaxRetries:      1,
+				RetryInitialMS:  1,
+				RetryMaxMS:      1,
+				Metrics:         metrics,
+			})
+			if err != nil {
+				t.Fatalf("new exporter: %v", err)
+			}
+			defer exporter.Close(context.Background())
+
+			exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 1)
+
+			if got := attempts.Load(); got != tc.wantAttempts {
+				t.Fatalf("attempts = %d, want %d", got, tc.wantAttempts)
+			}
+			if got := metrics.exportStatusesSnapshot(); !slices.Equal(got, tc.wantStatuses) {
+				t.Fatalf("export statuses = %v, want %v", got, tc.wantStatuses)
+			}
+			if got := metrics.dropReasonsSnapshot(); !slices.Equal(got, tc.wantDrops) {
+				t.Fatalf("drop reasons = %v, want %v", got, tc.wantDrops)
+			}
+		})
+	}
+}
+
+func TestExporterAppliesConfiguredHeadersOnRetries(t *testing.T) {
+	var attempts atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := attempts.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("attempt %d authorization header = %q", attempt, got)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "test-key" {
+			t.Fatalf("attempt %d x-api-key header = %q", attempt, got)
+		}
+		if attempt == 1 {
+			http.Error(w, "collector unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer ts.Close()
+
+	exporter, err := NewExporter(Config{
+		Endpoint:        ts.URL,
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		MaxRetries:      1,
+		RetryInitialMS:  1,
+		RetryMaxMS:      1,
+		Headers: map[string]string{
+			"Authorization": "Bearer test-token",
+			"X-Api-Key":     "test-key",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+	defer exporter.Close(context.Background())
+
+	exporter.exportPayload([]byte(`{"resourceSpans":[]}`), 1)
+
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+}
+
+func TestExporterCloseContextCanInterruptWaitDuringRetrySleep(t *testing.T) {
+	requestSeen := make(chan struct{})
+	var seen atomic.Bool
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if seen.CompareAndSwap(false, true) {
+			close(requestSeen)
+		}
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "collector unavailable", http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	exporter, err := NewExporter(Config{
+		Endpoint:        ts.URL,
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		MaxRetries:      1,
+		Metrics:         &recordingMetrics{},
+	})
+	if err != nil {
+		t.Fatalf("new exporter: %v", err)
+	}
+
+	if err := exporter.ExportAuditEntry(audit.Entry{Method: "tools/call"}); err != nil {
+		t.Fatalf("export audit entry: %v", err)
+	}
+	select {
+	case <-requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first export attempt")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err = exporter.Close(ctx)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("close during retry sleep error = %v, want context deadline exceeded", err)
+	}
+
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cleanupCancel()
+	if err := exporter.Close(cleanupCtx); err != nil {
+		t.Fatalf("cleanup close: %v", err)
+	}
+}
+
+func TestExporterRejectsInvalidTLSCAFilePEM(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "invalid-ca.pem")
+	if err := os.WriteFile(path, []byte("not a pem certificate"), 0o600); err != nil {
+		t.Fatalf("write invalid ca: %v", err)
+	}
+
+	_, err := NewExporter(Config{
+		Endpoint:        "https://collector.local",
+		ServiceName:     "mcp-audit-test",
+		QueueSize:       1,
+		BatchSize:       1,
+		FlushIntervalMS: 10000,
+		TLSCAFile:       path,
+	})
+	if err == nil {
+		t.Fatal("expected invalid TLS CA file error")
+	}
+	if !strings.Contains(err.Error(), "parse tls ca file") {
+		t.Fatalf("error = %v, want parse tls ca file", err)
 	}
 }
 
@@ -273,6 +651,117 @@ func TestExporterRejectsInvalidTLSCAFile(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected TLS CA file error")
+	}
+}
+
+func TestSpanFromEntryUsesJSONRPCErrorTypes(t *testing.T) {
+	exporter := &Exporter{}
+	cases := []struct {
+		name      string
+		code      int
+		wantError string
+	}{
+		{name: "rate limited", code: -32029, wantError: "rate_limited"},
+		{name: "policy denied", code: -32030, wantError: "policy_denied"},
+		{name: "generic jsonrpc", code: -32603, wantError: "jsonrpc_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			span, err := exporter.spanFromEntry(audit.Entry{
+				ID:         "entry-" + tc.name,
+				Timestamp:  time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC),
+				Direction:  audit.DirectionClientToServer,
+				Transport:  "stdio",
+				Method:     "tools/call",
+				DurationMs: -1,
+				Error:      &audit.RPCError{Code: tc.code, Message: "failed"},
+			})
+			if err != nil {
+				t.Fatalf("span from entry: %v", err)
+			}
+			if span.Status.Code != statusCodeError || span.Status.Message != "failed" {
+				t.Fatalf("status = %+v, want error failed", span.Status)
+			}
+			if span.StartTimeUnixNano != span.EndTimeUnixNano {
+				t.Fatalf("negative duration start = %s, end = %s, want equal", span.StartTimeUnixNano, span.EndTimeUnixNano)
+			}
+			assertStringAttr(t, attrMap(span.Attributes), attrErrorType, tc.wantError)
+		})
+	}
+}
+
+func TestTracesEndpointKeepsExistingPath(t *testing.T) {
+	endpoint, err := tracesEndpoint("http://collector.local/v1/traces")
+	if err != nil {
+		t.Fatalf("traces endpoint with suffix: %v", err)
+	}
+	if endpoint != "http://collector.local/v1/traces" {
+		t.Fatalf("endpoint with suffix = %q", endpoint)
+	}
+}
+
+func TestTracesEndpointRejectsInvalidURL(t *testing.T) {
+	if _, err := tracesEndpoint("http://%zz"); err == nil {
+		t.Fatal("expected parse error")
+	}
+}
+
+func TestUpstreamAddressParsesDefaultsAndExplicitPort(t *testing.T) {
+	cases := []struct {
+		name     string
+		upstream string
+		wantHost string
+		wantPort int
+	}{
+		{name: "http default port", upstream: "http://127.0.0.1", wantHost: "127.0.0.1", wantPort: 80},
+		{name: "https default port", upstream: "https://example.com", wantHost: "example.com", wantPort: 443},
+		{name: "explicit port", upstream: "http://example.com:4318", wantHost: "example.com", wantPort: 4318},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host, port := upstreamAddress(tc.upstream)
+			if host != tc.wantHost || port != tc.wantPort {
+				t.Fatalf("upstream address = %s:%d, want %s:%d", host, port, tc.wantHost, tc.wantPort)
+			}
+		})
+	}
+}
+
+func TestUpstreamAddressRejectsInvalidURL(t *testing.T) {
+	host, port := upstreamAddress("not a url")
+	if host != "" || port != 0 {
+		t.Fatalf("invalid upstream = %s:%d, want empty", host, port)
+	}
+}
+
+func TestCopyHeadersIgnoresBlankKeys(t *testing.T) {
+	headers := copyHeaders(map[string]string{"": "ignored", "Authorization": "Bearer token"})
+	if len(headers) != 1 || headers["Authorization"] != "Bearer token" {
+		t.Fatalf("headers = %v, want only Authorization", headers)
+	}
+}
+
+func TestSpanNameWithoutToolUsesMethod(t *testing.T) {
+	if got := spanName(audit.Entry{Method: "ping"}); got != "ping" {
+		t.Fatalf("spanName without tool = %q, want ping", got)
+	}
+}
+
+func TestNetworkTransportKeepsUnknownTransport(t *testing.T) {
+	if got := networkTransport("unix"); got != "unix" {
+		t.Fatalf("networkTransport = %q, want unix", got)
+	}
+}
+
+func TestNormalizeDirectionDefaultsToUnknown(t *testing.T) {
+	if got := normalizeDirection(""); got != "unknown" {
+		t.Fatalf("normalizeDirection empty = %q, want unknown", got)
+	}
+}
+
+func TestToolResultIsErrorIgnoresInvalidJSON(t *testing.T) {
+	if toolResultIsError(json.RawMessage(`not-json`)) {
+		t.Fatal("invalid tool result should not be an error")
 	}
 }
 
@@ -363,6 +852,7 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 type recordingMetrics struct {
+	mu             sync.Mutex
 	exportStatuses []string
 	dropReasons    []string
 	queueDepth     int
@@ -370,19 +860,45 @@ type recordingMetrics struct {
 }
 
 func (m *recordingMetrics) RecordOTelExport(status string, _ time.Duration, _ int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.exportStatuses = append(m.exportStatuses, status)
 }
 
 func (m *recordingMetrics) RecordOTelDrop(reason string, _ int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.dropReasons = append(m.dropReasons, reason)
 }
 
 func (m *recordingMetrics) SetOTelQueueDepth(depth int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.queueDepth = depth
 }
 
 func (m *recordingMetrics) SetOTelQueueCapacity(capacity int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.queueCapacity = capacity
+}
+
+func (m *recordingMetrics) exportStatusesSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.exportStatuses)
+}
+
+func (m *recordingMetrics) dropReasonsSnapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return slices.Clone(m.dropReasons)
+}
+
+func (m *recordingMetrics) queueDepthValue() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.queueDepth
 }
 
 func attrMap(attrs []keyValue) map[string]anyValue {
