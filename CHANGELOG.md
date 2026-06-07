@@ -7,10 +7,13 @@ All notable changes to mcp-audit are documented in this file.
 ### Added
 
 - Continue stdio configuration example under `examples/continue/`.
+- Dashboard bearer-token authentication via `dashboard.auth.token`.
 
 ### Changed
 
 - Pin the Go toolchain to `go1.22.12` in `go.mod` for reproducible contributor and CI builds.
+- Dashboard now binds to `127.0.0.1` by default through the new `dashboard.bind_address` config key, reducing accidental network exposure.
+- Dashboard authentication failures are rate-limited per remote address, and dashboard JSON API responses now send `Cache-Control: no-store`.
 
 ## [1.0.0] - 2026-05-31
 

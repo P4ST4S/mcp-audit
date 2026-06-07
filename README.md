@@ -178,7 +178,7 @@ Run with Docker Compose:
 docker compose up --build
 ```
 
-The dashboard is available at `http://localhost:9090` by default.
+The dashboard is available at `http://127.0.0.1:9090` by default.
 Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
 ## Examples
@@ -223,7 +223,9 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `policy.default_action` | `allow` | Fallback action when no policy rule matches: `allow` or `deny`. |
 | `policy.rules` | empty | Ordered first-match allow/deny rules for tool calls. |
 | `dashboard.enabled` | `true` | Serve the dashboard. |
+| `dashboard.bind_address` | `127.0.0.1` | Dashboard listen address. Set explicitly, for example to `0.0.0.0`, only when the dashboard is protected by network controls or auth. |
 | `dashboard.port` | `9090` | Dashboard listen port. |
+| `dashboard.auth.token` | empty | Optional bearer token required as `Authorization: Bearer <token>` for dashboard HTML and API requests. |
 | `metrics.enabled` | `true` | Serve Prometheus metrics on a separate HTTP endpoint. |
 | `metrics.port` | `9091` | Metrics listen port. |
 | `metrics.path` | `/metrics` | Metrics HTTP path. |
@@ -286,6 +288,27 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
 ## Dashboard
 
 The dashboard shows recent entries, filters, expandable request/result JSON, top tools, calls today, and error rate. It refreshes every five seconds.
+
+By default the dashboard listens only on `127.0.0.1:9090`. To expose it on another interface, configure `dashboard.bind_address` explicitly and enable authentication or place it behind a trusted access proxy.
+
+```yaml
+dashboard:
+  enabled: true
+  bind_address: 127.0.0.1
+  port: 9090
+  auth:
+    token: "replace-with-a-long-random-token"
+```
+
+When `dashboard.auth.token` is configured, requests to `/`, `/api/entries`, and `/api/stats` must include:
+
+```text
+Authorization: Bearer replace-with-a-long-random-token
+```
+
+Missing or invalid credentials return `401 Unauthorized` with `WWW-Authenticate: Bearer realm="mcp-audit-dashboard"`. Repeated failed authentication attempts from the same remote address are throttled with `429 Too Many Requests`.
+
+Dashboard JSON API responses include `Cache-Control: no-store` so intermediaries and browsers do not retain audit payloads.
 
 ## Prometheus Metrics
 

@@ -2,30 +2,53 @@ package dashboard
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 )
 
+const (
+	// DefaultBindAddress keeps the dashboard reachable from localhost only by default.
+	DefaultBindAddress        = "127.0.0.1"
+	bearerChallenge           = `Bearer realm="mcp-audit-dashboard"`
+	bearerAuthorizationScheme = "Bearer"
+	authFailureLimit          = 10
+	authFailureWindow         = time.Minute
+	authFailureMaxPrincipals  = 4096
+)
+
 // Config configures the audit dashboard.
 type Config struct {
-	Enabled bool
-	Port    int
-	Store   audit.Store
-	Log     *slog.Logger
+	Enabled     bool
+	BindAddress string
+	Port        int
+	Auth        AuthConfig
+	Store       audit.Store
+	Log         *slog.Logger
+}
+
+// AuthConfig configures dashboard HTTP authentication.
+type AuthConfig struct {
+	Token string
 }
 
 // Server serves the read-only audit dashboard.
 type Server struct {
-	config Config
-	server *http.Server
-	log    *slog.Logger
+	config       Config
+	server       *http.Server
+	log          *slog.Logger
+	authFailures *authFailureLimiter
 }
 
 // NewServer creates a dashboard server.
@@ -34,17 +57,142 @@ func NewServer(config Config) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if strings.TrimSpace(config.BindAddress) == "" {
+		config.BindAddress = DefaultBindAddress
+	}
+	config.Auth.Token = strings.TrimSpace(config.Auth.Token)
 	mux := http.NewServeMux()
 	s := &Server{config: config, log: logger}
+	if config.Auth.Token != "" {
+		s.authFailures = newAuthFailureLimiter(authFailureLimit, authFailureWindow, authFailureMaxPrincipals)
+	}
 	mux.HandleFunc("/", s.index)
 	mux.HandleFunc("/api/entries", s.entries)
 	mux.HandleFunc("/api/stats", s.stats)
 	s.server = &http.Server{
-		Addr:              fmt.Sprintf(":%d", config.Port),
-		Handler:           mux,
+		Addr:              s.listenAddress(),
+		Handler:           s.authenticate(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	return s
+}
+
+func (s *Server) listenAddress() string {
+	return net.JoinHostPort(s.config.BindAddress, strconv.Itoa(s.config.Port))
+}
+
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	if s.config.Auth.Token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal := authPrincipal(r)
+		if validBearerToken(r.Header.Get("Authorization"), s.config.Auth.Token) {
+			s.authFailures.reset(principal)
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.authFailures.recordFailure(principal, time.Now()) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(authFailureWindow/time.Second)))
+			http.Error(w, "too many authentication attempts", http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("WWW-Authenticate", bearerChallenge)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
+}
+
+// validBearerToken returns true iff the Authorization header presents the
+// configured bearer token. Constant-time comparison is used for the token body
+// itself; the length-mismatch fast path is intentional and leaks only the
+// configured token's length, which is conventionally not secret.
+func validBearerToken(header string, want string) bool {
+	scheme, credentials, ok := strings.Cut(header, " ")
+	if !ok || !strings.EqualFold(scheme, bearerAuthorizationScheme) {
+		return false
+	}
+	got := strings.TrimLeftFunc(credentials, unicode.IsSpace)
+	if got == "" || len(got) != len(want) || strings.ContainsFunc(got, unicode.IsSpace) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+func authPrincipal(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	if r.RemoteAddr != "" {
+		return r.RemoteAddr
+	}
+	return "unknown"
+}
+
+type authFailureLimiter struct {
+	mu            sync.Mutex
+	limit         int
+	window        time.Duration
+	maxPrincipals int
+	attempts      map[string]authFailureBucket
+}
+
+type authFailureBucket struct {
+	windowStart time.Time
+	failures    int
+}
+
+func newAuthFailureLimiter(limit int, window time.Duration, maxPrincipals int) *authFailureLimiter {
+	return &authFailureLimiter{
+		limit:         limit,
+		window:        window,
+		maxPrincipals: maxPrincipals,
+		attempts:      make(map[string]authFailureBucket),
+	}
+}
+
+func (l *authFailureLimiter) recordFailure(principal string, now time.Time) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	bucket, ok := l.attempts[principal]
+	if !ok {
+		l.ensureCapacity(now)
+		bucket = authFailureBucket{windowStart: now}
+	}
+	if now.Sub(bucket.windowStart) >= l.window {
+		bucket = authFailureBucket{windowStart: now}
+	}
+	bucket.failures++
+	l.attempts[principal] = bucket
+	return bucket.failures <= l.limit
+}
+
+func (l *authFailureLimiter) reset(principal string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	delete(l.attempts, principal)
+}
+
+func (l *authFailureLimiter) ensureCapacity(now time.Time) {
+	if len(l.attempts) < l.maxPrincipals {
+		return
+	}
+	var oldestPrincipal string
+	var oldestTime time.Time
+	for principal, bucket := range l.attempts {
+		if now.Sub(bucket.windowStart) >= l.window {
+			delete(l.attempts, principal)
+			continue
+		}
+		if oldestPrincipal == "" || bucket.windowStart.Before(oldestTime) {
+			oldestPrincipal = principal
+			oldestTime = bucket.windowStart
+		}
+	}
+	if len(l.attempts) >= l.maxPrincipals && oldestPrincipal != "" {
+		delete(l.attempts, oldestPrincipal)
+	}
 }
 
 // ListenAndServe starts the dashboard and shuts down when ctx is canceled.
@@ -142,6 +290,7 @@ func queryFilter(r *http.Request) (audit.QueryFilter, error) {
 }
 
 func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
 }

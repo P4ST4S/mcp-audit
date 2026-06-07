@@ -47,6 +47,13 @@ func newTestServer(store *dashFakeStore) *Server {
 	return NewServer(Config{Store: store})
 }
 
+func newAuthenticatedTestServer(store *dashFakeStore, token string) *Server {
+	return NewServer(Config{
+		Store: store,
+		Auth:  AuthConfig{Token: token},
+	})
+}
+
 // freePort binds :0 and returns the allocated port (the listener is closed
 // before returning, so the port is "free" for the next caller).
 func freePort(t *testing.T) int {
@@ -326,12 +333,211 @@ func TestServerEntriesReturnsValidJSON(t *testing.T) {
 	if ct != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	var got []audit.Entry
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("round-trip decode: %v", err)
 	}
 	if len(got) != 1 || got[0].ID != "rt-1" {
 		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+func TestServerRoutesAllowRequestsWhenNoAuthConfigured(t *testing.T) {
+	t.Parallel()
+	store := &dashFakeStore{
+		records: []audit.Entry{{ID: "rt-1"}},
+		stats:   audit.Stats{TotalToday: 1},
+	}
+	s := NewServer(Config{Store: store})
+
+	for _, path := range []string{"/", "/api/entries", "/api/stats"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			s.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want 200", path, rec.Code)
+			}
+		})
+	}
+}
+
+func TestServerRoutesAllowValidBearerToken(t *testing.T) {
+	t.Parallel()
+	store := &dashFakeStore{
+		records: []audit.Entry{{ID: "rt-1"}},
+		stats:   audit.Stats{TotalToday: 1},
+	}
+	s := newAuthenticatedTestServer(store, "test-token")
+
+	for _, path := range []string{"/", "/api/entries", "/api/stats"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Authorization", "Bearer test-token")
+			rec := httptest.NewRecorder()
+			s.server.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want 200", path, rec.Code)
+			}
+		})
+	}
+}
+
+func TestServerRoutesRejectMissingBearerToken(t *testing.T) {
+	t.Parallel()
+	s := newAuthenticatedTestServer(&dashFakeStore{}, "test-token")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/entries", nil)
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+
+	assertUnauthorized(t, rec)
+}
+
+func TestServerRoutesRejectInvalidBearerToken(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name          string
+		authorization string
+	}{
+		{name: "wrong token", authorization: "Bearer wrong-token"},
+		{name: "wrong scheme", authorization: "Basic dGVzdDp0ZXN0"},
+		{name: "missing space", authorization: "Bearertest-token"},
+		{name: "empty bearer", authorization: "Bearer "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newAuthenticatedTestServer(&dashFakeStore{}, "test-token")
+			req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+			req.Header.Set("Authorization", tc.authorization)
+			rec := httptest.NewRecorder()
+			s.server.Handler.ServeHTTP(rec, req)
+
+			assertUnauthorized(t, rec)
+		})
+	}
+}
+
+func TestServerRoutesRateLimitsInvalidBearerTokenAttempts(t *testing.T) {
+	t.Parallel()
+	s := newAuthenticatedTestServer(&dashFakeStore{stats: audit.Stats{TotalToday: 1}}, "test-token")
+	remoteAddr := "203.0.113.10:5000"
+
+	for i := 0; i < authFailureLimit; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Authorization", "Bearer wrong-token")
+		rec := httptest.NewRecorder()
+		s.server.Handler.ServeHTTP(rec, req)
+		assertUnauthorized(t, rec)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec := httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rec.Code)
+	}
+	if got := rec.Header().Get("Retry-After"); got != "60" {
+		t.Fatalf("Retry-After = %q, want 60", got)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Authorization", "Bearer test-token")
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid token status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	req.RemoteAddr = remoteAddr
+	req.Header.Set("Authorization", "Bearer wrong-token")
+	rec = httptest.NewRecorder()
+	s.server.Handler.ServeHTTP(rec, req)
+	assertUnauthorized(t, rec)
+}
+
+func TestValidBearerTokenUsesExactToken(t *testing.T) {
+	t.Parallel()
+	if !validBearerToken("Bearer abc.def-123", "abc.def-123") {
+		t.Fatal("validBearerToken rejected exact bearer token")
+	}
+	if !validBearerToken("bearer   abc.def-123", "abc.def-123") {
+		t.Fatal("validBearerToken rejected case-insensitive scheme with extra spacing")
+	}
+	if validBearerToken("Bearer abc.def-123 ", "abc.def-123") {
+		t.Fatal("validBearerToken accepted bearer token with trailing whitespace")
+	}
+}
+
+func TestAuthFailureLimiterResetsWindowAndEvictsOldestPrincipal(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 7, 12, 0, 0, 0, time.UTC)
+	limiter := newAuthFailureLimiter(1, time.Minute, 2)
+
+	if !limiter.recordFailure("client-a", now) {
+		t.Fatal("first failure should be allowed")
+	}
+	if limiter.recordFailure("client-a", now.Add(time.Second)) {
+		t.Fatal("second failure in same window should be rate-limited")
+	}
+	if !limiter.recordFailure("client-a", now.Add(time.Minute)) {
+		t.Fatal("failure after window should be allowed")
+	}
+
+	limiter = newAuthFailureLimiter(1, time.Hour, 2)
+	if !limiter.recordFailure("client-a", now) {
+		t.Fatal("client-a first failure should be allowed")
+	}
+	if !limiter.recordFailure("client-b", now.Add(time.Minute)) {
+		t.Fatal("client-b first failure should be allowed")
+	}
+	if !limiter.recordFailure("client-c", now.Add(2*time.Minute)) {
+		t.Fatal("client-c first failure should be allowed")
+	}
+	if !limiter.recordFailure("client-a", now.Add(3*time.Minute)) {
+		t.Fatal("oldest client should have been evicted")
+	}
+
+	limiter = newAuthFailureLimiter(1, time.Minute, 1)
+	if !limiter.recordFailure("client-a", now) {
+		t.Fatal("client-a first failure should be allowed")
+	}
+	if !limiter.recordFailure("client-b", now.Add(2*time.Minute)) {
+		t.Fatal("expired client should be pruned before adding client-b")
+	}
+}
+
+func TestAuthPrincipalUsesRemoteAddressHost(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		remoteAddr string
+		want       string
+	}{
+		{name: "host port", remoteAddr: "203.0.113.10:5000", want: "203.0.113.10"},
+		{name: "raw fallback", remoteAddr: "203.0.113.10", want: "203.0.113.10"},
+		{name: "empty fallback", remoteAddr: "", want: "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+			req.RemoteAddr = tc.remoteAddr
+			if got := authPrincipal(req); got != tc.want {
+				t.Fatalf("auth principal = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -395,6 +601,9 @@ func TestServerStatsReturnsValidJSON(t *testing.T) {
 	ct := rec.Header().Get("Content-Type")
 	if ct != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
 	}
 	var got audit.Stats
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
@@ -541,9 +750,7 @@ func TestServerListenAndServeShutdownsOnContextCancel(t *testing.T) {
 
 func TestServerListenAndServeReturnsErrorOnBindFailure(t *testing.T) {
 	t.Parallel()
-	// Bind 0.0.0.0:0 (wildcard), same interface as ListenAndServe, so the
-	// dashboard will collide and return a bind error.
-	blocker, err := net.Listen("tcp", "0.0.0.0:0")
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("blocker listen: %v", err)
 	}
@@ -575,6 +782,35 @@ func TestNewServerNilLogFallsBackToDefault(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestNewServerDefaultsToLoopbackBindAddress(t *testing.T) {
+	t.Parallel()
+	s := NewServer(Config{Port: 9090, Store: &dashFakeStore{}})
+
+	if s.server.Addr != "127.0.0.1:9090" {
+		t.Fatalf("listen addr = %q, want 127.0.0.1:9090", s.server.Addr)
+	}
+}
+
+func TestNewServerUsesConfiguredBindAddress(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		bindAddress string
+		want        string
+	}{
+		{name: "wildcard IPv4", bindAddress: "0.0.0.0", want: "0.0.0.0:9090"},
+		{name: "IPv6 loopback", bindAddress: "::1", want: "[::1]:9090"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(Config{BindAddress: tc.bindAddress, Port: 9090, Store: &dashFakeStore{}})
+			if s.server.Addr != tc.want {
+				t.Fatalf("listen addr = %q, want %q", s.server.Addr, tc.want)
+			}
+		})
 	}
 }
 
@@ -612,6 +848,16 @@ func mustDecodeJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
 	t.Helper()
 	if err := json.NewDecoder(rec.Body).Decode(v); err != nil {
 		t.Fatalf("JSON decode: %v", err)
+	}
+}
+
+func assertUnauthorized(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if got := rec.Header().Get("WWW-Authenticate"); got != bearerChallenge {
+		t.Fatalf("WWW-Authenticate = %q, want %q", got, bearerChallenge)
 	}
 }
 
