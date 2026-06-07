@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
@@ -81,8 +82,12 @@ type appConfig struct {
 		Rules         []policy.Rule `mapstructure:"rules"`
 	} `mapstructure:"policy"`
 	Dashboard struct {
-		Enabled bool `mapstructure:"enabled"`
-		Port    int  `mapstructure:"port"`
+		Enabled     bool   `mapstructure:"enabled"`
+		BindAddress string `mapstructure:"bind_address"`
+		Port        int    `mapstructure:"port"`
+		Auth        struct {
+			Token string `mapstructure:"token"`
+		} `mapstructure:"auth"`
 	} `mapstructure:"dashboard"`
 	Metrics struct {
 		Enabled               bool   `mapstructure:"enabled"`
@@ -205,16 +210,11 @@ func main() {
 
 	errs := make(chan error, 3)
 	if config.Dashboard.Enabled {
-		server := dashboard.NewServer(dashboard.Config{
-			Enabled: true,
-			Port:    config.Dashboard.Port,
-			Store:   store,
-			Log:     logger,
-		})
+		server := dashboard.NewServer(dashboardConfigFromApp(config, store, logger))
 		go func() {
 			errs <- server.ListenAndServe(ctx)
 		}()
-		logger.Info("dashboard listening", "port", config.Dashboard.Port)
+		logger.Info("dashboard listening", "bind_address", config.Dashboard.BindAddress, "port", config.Dashboard.Port, "auth_enabled", config.Dashboard.Auth.Token != "")
 	}
 	if metricsServer != nil {
 		go func() {
@@ -355,6 +355,19 @@ func loadConfig(flags cliFlags) (appConfig, error) {
 	return config, validateConfig(config)
 }
 
+func dashboardConfigFromApp(config appConfig, store audit.Store, logger *slog.Logger) dashboard.Config {
+	return dashboard.Config{
+		Enabled:     true,
+		BindAddress: config.Dashboard.BindAddress,
+		Port:        config.Dashboard.Port,
+		Auth: dashboard.AuthConfig{
+			Token: config.Dashboard.Auth.Token,
+		},
+		Store: store,
+		Log:   logger,
+	}
+}
+
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
 	v.SetDefault("proxy.port", 4422)
@@ -385,7 +398,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("policy.default_action", policy.ActionAllow)
 	v.SetDefault("policy.rules", []policy.Rule{})
 	v.SetDefault("dashboard.enabled", true)
+	v.SetDefault("dashboard.bind_address", dashboard.DefaultBindAddress)
 	v.SetDefault("dashboard.port", 9090)
+	v.SetDefault("dashboard.auth.token", "")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.port", 9091)
 	v.SetDefault("metrics.path", "/metrics")
@@ -452,6 +467,19 @@ func validateConfig(config appConfig) error {
 	}
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")
+	}
+	if config.Dashboard.Enabled {
+		if strings.TrimSpace(config.Dashboard.BindAddress) == "" {
+			return fmt.Errorf("main: dashboard.bind_address is required when dashboard is enabled")
+		}
+		if config.Dashboard.Port <= 0 || config.Dashboard.Port > 65535 {
+			return fmt.Errorf("main: dashboard.port must be between 1 and 65535")
+		}
+		if token := config.Dashboard.Auth.Token; token != "" {
+			if strings.TrimSpace(token) != token || strings.ContainsFunc(token, unicode.IsSpace) {
+				return fmt.Errorf("main: dashboard.auth.token must not contain whitespace")
+			}
+		}
 	}
 	if config.OTel.Enabled {
 		if config.OTel.Endpoint == "" {

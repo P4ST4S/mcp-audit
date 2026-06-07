@@ -21,6 +21,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - Existing keys keep their meaning and accepted values.
 - New keys are additive and have safe defaults.
 - Removing or renaming a key requires a MAJOR bump and a deprecation period (see [Deprecation](#deprecation)).
+- The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
 
 ### CLI flags
 
@@ -45,6 +46,10 @@ MCP and GenAI semantic convention attributes follow the upstream OpenTelemetry s
 ### Dashboard HTTP API
 
 The read-only API endpoints (`GET /api/entries`, `GET /api/stats`) keep their query parameters and response shape. New parameters may be added in MINOR releases.
+
+When `dashboard.auth.token` is configured, dashboard HTML and API requests require `Authorization: Bearer <token>`. Missing or invalid credentials return `401 Unauthorized` with `WWW-Authenticate: Bearer realm="mcp-audit-dashboard"`. Repeated failed authentication attempts may return `429 Too Many Requests`.
+
+Successful JSON API responses include `Cache-Control: no-store`.
 
 ### Exit codes and JSON-RPC error codes
 
