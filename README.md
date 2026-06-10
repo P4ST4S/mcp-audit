@@ -196,6 +196,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
 | `proxy.port` | `4422` | HTTP listen port. |
 | `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
+| `proxy.forward_headers` | empty | Request headers allowed to bypass the default upstream strip list. Use `["Authorization"]` only when the upstream MCP HTTP server requires bearer-token auth. |
 | `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
 | `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
 | `proxy.tls.insecure_skip_verify` | `false` | Skip upstream TLS certificate verification. Intended only for local testing. |
@@ -246,6 +247,16 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `otel.batch_size` | `64` | Maximum spans per OTLP export request. |
 | `otel.flush_interval_ms` | `1000` | Maximum time before a partial OTLP batch is exported. |
 | `otel.timeout_ms` | `5000` | OTLP HTTP request timeout. |
+
+By default, `mcp-audit` strips hop-by-hop request headers and `Authorization` before forwarding HTTP requests to the upstream. To pass a bearer token to a trusted authenticated upstream, opt in explicitly:
+
+```yaml
+proxy:
+  forward_headers:
+    - Authorization
+```
+
+Forwarded headers are passed verbatim to the upstream. `Authorization` is the only sensitive header that can be opt-in forwarded because some MCP HTTP servers require it for upstream authentication. `Cookie`, `Set-Cookie`, and `Proxy-Authorization` are always rejected: they represent state destined for other components such as browser sessions or proxy chains and have no legitimate use in MCP request forwarding. If an existing deployment relied on implicit `Authorization` forwarding, add the config above.
 
 CLI flags:
 

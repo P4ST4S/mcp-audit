@@ -33,6 +33,9 @@ func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 	if config.Dashboard.Auth.Token != "" {
 		t.Fatalf("dashboard auth token = %q, want empty", config.Dashboard.Auth.Token)
 	}
+	if len(config.Proxy.ForwardHeaders) != 0 {
+		t.Fatalf("forward_headers = %#v, want empty", config.Proxy.ForwardHeaders)
+	}
 }
 
 // TestLoadConfigReadsUpstreamTimeout verifies config.yaml can set the HTTP
@@ -59,6 +62,8 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   upstream: https://upstream.local
+  forward_headers:
+    - Authorization
   tls:
     ca_file: /tmp/ca.pem
     server_name: mcp.internal
@@ -101,6 +106,9 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 	}
 	if config.Proxy.Retry.MaxIntervalMS != 500 {
 		t.Fatalf("max_interval_ms = %d, want 500", config.Proxy.Retry.MaxIntervalMS)
+	}
+	if len(config.Proxy.ForwardHeaders) != 1 || config.Proxy.ForwardHeaders[0] != "Authorization" {
+		t.Fatalf("forward_headers = %#v, want [Authorization]", config.Proxy.ForwardHeaders)
 	}
 }
 
@@ -196,6 +204,39 @@ func TestValidateConfigRejectsPartialProxyMTLSConfig(t *testing.T) {
 
 	if err := validateConfig(config); err == nil {
 		t.Fatal("expected partial mTLS config error, got nil")
+	}
+}
+
+func TestValidateConfigRejectsInvalidForwardHeaders(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers []string
+	}{
+		{name: "empty", headers: []string{""}},
+		{name: "leading whitespace", headers: []string{" Authorization"}},
+		{name: "trailing whitespace", headers: []string{"Authorization "}},
+		{name: "embedded whitespace", headers: []string{"X Auth"}},
+		{name: "cookie", headers: []string{"Cookie"}},
+		{name: "set-cookie case insensitive", headers: []string{"set-cookie"}},
+		{name: "proxy authorization", headers: []string{"Proxy-Authorization"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			config.Proxy.ForwardHeaders = tc.headers
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected invalid forward headers error, got nil")
+			}
+		})
+	}
+}
+
+func TestValidateConfigAllowsAuthorizationForwardHeader(t *testing.T) {
+	config := minimalValidConfig()
+	config.Proxy.ForwardHeaders = []string{"Authorization"}
+
+	if err := validateConfig(config); err != nil {
+		t.Fatalf("validate config: %v", err)
 	}
 }
 
