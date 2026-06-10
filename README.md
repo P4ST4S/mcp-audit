@@ -66,9 +66,9 @@ Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_linux_amd64.tar.gz
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_linux_amd64.tar.gz
 curl -L -o mcp-audit_checksums.txt \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt
 sha256sum -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
@@ -89,9 +89,9 @@ macOS ships `shasum` instead of `sha256sum`. Use `darwin_arm64` for Apple Silico
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_darwin_arm64.tar.gz
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_darwin_arm64.tar.gz
 curl -L -o mcp-audit_checksums.txt \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt
 shasum -a 256 -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
@@ -115,8 +115,8 @@ mcp-audit --version
 Windows builds are published as a `.zip` archive containing `mcp-audit.exe`. The following uses PowerShell:
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_windows_amd64.zip" -OutFile "mcp-audit.zip"
-Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt" -OutFile "mcp-audit_checksums.txt"
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_windows_amd64.zip" -OutFile "mcp-audit.zip"
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt" -OutFile "mcp-audit_checksums.txt"
 
 # Verify the checksum and fail if it does not match
 $expected = ((Select-String -Path mcp-audit_checksums.txt -Pattern "windows_amd64.zip").Line -split '\s+')[0].ToLower()
@@ -141,13 +141,13 @@ mcp-audit --version
 Run with Docker:
 
 ```bash
-docker run --rm ghcr.io/p4st4s/mcp-audit:v0.9.0 --version
+docker run --rm ghcr.io/p4st4s/mcp-audit:v1.0.0 --version
 ```
 
 Or install with Go:
 
 ```bash
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.9.0
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v1.0.0
 ```
 
 ## Quick Start
