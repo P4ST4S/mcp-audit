@@ -505,7 +505,10 @@ func validateConfig(config appConfig) error {
 
 func validateForwardHeaders(headers []string) error {
 	for _, header := range headers {
-		if strings.TrimSpace(header) != header || header == "" {
+		if strings.TrimSpace(header) != header {
+			return fmt.Errorf("main: proxy.forward_headers contains an invalid header name")
+		}
+		if header == "" {
 			return fmt.Errorf("main: proxy.forward_headers contains an invalid header name")
 		}
 		if strings.ContainsFunc(header, unicode.IsSpace) {
