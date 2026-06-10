@@ -65,6 +65,10 @@ type appConfig struct {
 			BatchSize       int  `mapstructure:"batch_size"`
 			FlushIntervalMS int  `mapstructure:"flush_interval_ms"`
 		} `mapstructure:"async"`
+		Rotation struct {
+			MaxSizeBytes int64 `mapstructure:"max_size_bytes"`
+			MaxFiles     int   `mapstructure:"max_files"`
+		} `mapstructure:"rotation"`
 	} `mapstructure:"audit"`
 	Middleware struct {
 		RateLimit struct {
@@ -167,7 +171,7 @@ func main() {
 		}()
 	}
 
-	store, err := openStore(config, metricsRecorder)
+	store, err := openStore(config, metricsRecorder, logger)
 	if err != nil {
 		logger.Error("failed to open audit store", "error", err)
 		os.Exit(1)
@@ -390,6 +394,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.async.queue_size", 4096)
 	v.SetDefault("audit.async.batch_size", 128)
 	v.SetDefault("audit.async.flush_interval_ms", 1000)
+	v.SetDefault("audit.rotation.max_size_bytes", 0)
+	v.SetDefault("audit.rotation.max_files", 0)
 	v.SetDefault("middleware.rate_limit.enabled", true)
 	v.SetDefault("middleware.rate_limit.requests_per_minute", 60)
 	v.SetDefault("middleware.redact.enabled", true)
@@ -494,7 +500,20 @@ func validateConfig(config appConfig) error {
 	default:
 		return fmt.Errorf("main: audit.storage must be jsonl or sqlite")
 	}
+	if config.Audit.Rotation.MaxSizeBytes < 0 {
+		return fmt.Errorf("main: audit.rotation.max_size_bytes must be >= 0")
+	}
+	if config.Audit.Rotation.MaxFiles < 0 {
+		return fmt.Errorf("main: audit.rotation.max_files must be >= 0")
+	}
+	if config.Audit.Storage == "sqlite" && rotationConfigured(config) {
+		return fmt.Errorf("main: audit.rotation is only supported with jsonl storage")
+	}
 	return nil
+}
+
+func rotationConfigured(config appConfig) bool {
+	return config.Audit.Rotation.MaxSizeBytes > 0 || config.Audit.Rotation.MaxFiles > 0
 }
 
 func newPolicy(config appConfig) (*policy.Engine, error) {
@@ -553,12 +572,16 @@ func newTraceExporter(config appConfig, metricsRecorder metrics.Recorder, logger
 	})
 }
 
-func openStore(config appConfig, metricsRecorder metrics.Recorder) (audit.Store, error) {
+func openStore(config appConfig, metricsRecorder metrics.Recorder, logger *slog.Logger) (audit.Store, error) {
 	var store audit.Store
 	backend := config.Audit.Storage
 	switch config.Audit.Storage {
 	case "jsonl":
-		jsonl, err := storage.NewJSONLStore(config.Audit.Path)
+		jsonl, err := storage.NewJSONLStoreWithConfig(config.Audit.Path, storage.JSONLConfig{
+			MaxSizeBytes: config.Audit.Rotation.MaxSizeBytes,
+			MaxFiles:     config.Audit.Rotation.MaxFiles,
+			Log:          logger,
+		})
 		if err != nil {
 			return nil, err
 		}

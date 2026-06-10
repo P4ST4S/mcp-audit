@@ -22,6 +22,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - New keys are additive and have safe defaults.
 - Removing or renaming a key requires a MAJOR bump and a deprecation period (see [Deprecation](#deprecation)).
 - The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
+- The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`) are part of the stable configuration surface.
 
 ### CLI flags
 
