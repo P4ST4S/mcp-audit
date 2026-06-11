@@ -2,7 +2,7 @@ module github.com/P4ST4S/mcp-audit
 
 go 1.22
 
-toolchain go1.22.12
+toolchain go1.26.4
 
 require (
 	github.com/oklog/ulid/v2 v2.1.1

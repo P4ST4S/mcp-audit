@@ -13,7 +13,7 @@ go test -race ./...
 go test -race -coverprofile=coverage.out -covermode=atomic ./...
 ```
 
-CI uses Go 1.22 (see `go.mod`). Tests must pass with `-race`. Coverage is uploaded to Codecov on push to `main`.
+CI uses the `toolchain` directive pinned in `go.mod` (currently `go1.26.4`). The minimum supported Go version is `1.22`, also declared in `go.mod`. Tests must pass with `-race`. Coverage is uploaded to Codecov on push to `main`.
 
 For local end-to-end testing, see the [`demo/`](demo/) directory and the [`run` skill in CLAUDE.md](CLAUDE.md) if applicable.
 
