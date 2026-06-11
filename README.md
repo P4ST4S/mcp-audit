@@ -1,6 +1,6 @@
 # mcp-audit
 
-![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8)
+![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8)
 [![CI](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/P4ST4S/mcp-audit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/P4ST4S/mcp-audit/graph/badge.svg)](https://codecov.io/gh/P4ST4S/mcp-audit)
 [![mcp-audit MCP server](https://glama.ai/mcp/servers/P4ST4S/mcp-audit/badges/score.svg)](https://glama.ai/mcp/servers/P4ST4S/mcp-audit)
