@@ -4,6 +4,8 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-11
+
 ### Added
 
 - Continue stdio configuration example under `examples/continue/`.
