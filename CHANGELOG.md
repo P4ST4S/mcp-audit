@@ -8,12 +8,26 @@ All notable changes to mcp-audit are documented in this file.
 
 - Continue stdio configuration example under `examples/continue/`.
 - Dashboard bearer-token authentication via `dashboard.auth.token`.
+- `proxy.forward_headers` for opt-in forwarding of selected HTTP request headers such as `Authorization` to trusted upstream MCP servers.
 
 ### Changed
 
 - Pin the Go toolchain to `go1.22.12` in `go.mod` for reproducible contributor and CI builds.
 - Dashboard now binds to `127.0.0.1` by default through the new `dashboard.bind_address` config key, reducing accidental network exposure.
 - Dashboard authentication failures are rate-limited per remote address, and dashboard JSON API responses now send `Cache-Control: no-store`.
+- Breaking behavior change: `Authorization` headers are no longer forwarded to upstream HTTP MCP servers by default. To restore prior behavior, add `proxy.forward_headers: [Authorization]` to your config.
+
+### Migration from 1.0.0
+
+If your upstream HTTP MCP server requires bearer-token authentication from the client request, opt in to forwarding the `Authorization` header:
+
+```yaml
+proxy:
+  forward_headers:
+    - Authorization
+```
+
+Without this setting, authenticated upstreams may return `401 Unauthorized`; `mcp-audit` forwards that upstream response to the client unchanged.
 
 ## [1.0.0] - 2026-05-31
 

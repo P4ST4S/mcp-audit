@@ -66,9 +66,9 @@ Download a prebuilt binary from [GitHub Releases](https://github.com/P4ST4S/mcp-
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_linux_amd64.tar.gz
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_linux_amd64.tar.gz
 curl -L -o mcp-audit_checksums.txt \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt
 sha256sum -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
@@ -89,9 +89,9 @@ macOS ships `shasum` instead of `sha256sum`. Use `darwin_arm64` for Apple Silico
 
 ```bash
 curl -L -o mcp-audit.tar.gz \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_darwin_arm64.tar.gz
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_darwin_arm64.tar.gz
 curl -L -o mcp-audit_checksums.txt \
-  https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt
+  https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt
 shasum -a 256 -c mcp-audit_checksums.txt --ignore-missing
 tar -xzf mcp-audit.tar.gz
 ./mcp-audit --version
@@ -115,8 +115,8 @@ mcp-audit --version
 Windows builds are published as a `.zip` archive containing `mcp-audit.exe`. The following uses PowerShell:
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_windows_amd64.zip" -OutFile "mcp-audit.zip"
-Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v0.9.0/mcp-audit_0.9.0_checksums.txt" -OutFile "mcp-audit_checksums.txt"
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_windows_amd64.zip" -OutFile "mcp-audit.zip"
+Invoke-WebRequest -Uri "https://github.com/P4ST4S/mcp-audit/releases/download/v1.0.0/mcp-audit_1.0.0_checksums.txt" -OutFile "mcp-audit_checksums.txt"
 
 # Verify the checksum and fail if it does not match
 $expected = ((Select-String -Path mcp-audit_checksums.txt -Pattern "windows_amd64.zip").Line -split '\s+')[0].ToLower()
@@ -141,13 +141,13 @@ mcp-audit --version
 Run with Docker:
 
 ```bash
-docker run --rm ghcr.io/p4st4s/mcp-audit:v0.9.0 --version
+docker run --rm ghcr.io/p4st4s/mcp-audit:v1.0.0 --version
 ```
 
 Or install with Go:
 
 ```bash
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v0.9.0
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v1.0.0
 ```
 
 ## Quick Start
@@ -196,6 +196,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
 | `proxy.port` | `4422` | HTTP listen port. |
 | `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
+| `proxy.forward_headers` | empty | Request headers allowed to bypass the default upstream strip list. Use `["Authorization"]` only when the upstream MCP HTTP server requires bearer-token auth. |
 | `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
 | `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
 | `proxy.tls.insecure_skip_verify` | `false` | Skip upstream TLS certificate verification. Intended only for local testing. |
@@ -246,6 +247,16 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `otel.batch_size` | `64` | Maximum spans per OTLP export request. |
 | `otel.flush_interval_ms` | `1000` | Maximum time before a partial OTLP batch is exported. |
 | `otel.timeout_ms` | `5000` | OTLP HTTP request timeout. |
+
+By default, `mcp-audit` strips hop-by-hop request headers and `Authorization` before forwarding HTTP requests to the upstream. To pass a bearer token to a trusted authenticated upstream, opt in explicitly:
+
+```yaml
+proxy:
+  forward_headers:
+    - Authorization
+```
+
+Security note: forwarded headers, including secrets like bearer tokens, are transmitted verbatim to the upstream server. Only enable this if you control or trust the upstream MCP server. `Authorization` is the only sensitive header that can be opt-in forwarded because some MCP HTTP servers require it for upstream authentication. `Cookie`, `Set-Cookie`, and `Proxy-Authorization` are always rejected: they represent state destined for other components such as browser sessions or proxy chains and have no legitimate use in MCP request forwarding. If an existing deployment relied on implicit `Authorization` forwarding, add the config above.
 
 CLI flags:
 

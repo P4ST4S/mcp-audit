@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,223 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 )
+
+func TestHTTPProxyStripsAuthorizationByDefault(t *testing.T) {
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if got := upstreamHeaders.Get("Authorization"); got != "" {
+		t.Fatalf("authorization = %q, want stripped", got)
+	}
+}
+
+func TestHTTPProxyForwardsConfiguredAuthorization(t *testing.T) {
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		ForwardHeaders: []string{"Authorization"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if got := upstreamHeaders.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("authorization = %q, want forwarded bearer token", got)
+	}
+}
+
+func TestHTTPProxyAuthorizationForwardingMigrationScenario(t *testing.T) {
+	authRequiredTransport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.Header.Get("Authorization"); got != "Bearer secret" {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Body:       io.NopCloser(bytes.NewReader([]byte("unauthorized"))),
+				Header:     make(http.Header),
+			}, nil
+		}
+		return okJSONResponse(), nil
+	})
+
+	strippedProxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+	if err != nil {
+		t.Fatalf("new stripped proxy: %v", err)
+	}
+	strippedProxy.client.Transport = authRequiredTransport
+	strippedReq := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	strippedReq.Header.Set("Authorization", "Bearer secret")
+	strippedRec := httptest.NewRecorder()
+
+	strippedProxy.ServeHTTP(strippedRec, strippedReq)
+
+	if strippedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("stripped status = %d, want 401", strippedRec.Code)
+	}
+	if got := strippedRec.Body.String(); got != "unauthorized" {
+		t.Fatalf("stripped body = %q, want upstream unauthorized body", got)
+	}
+
+	forwardingProxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		ForwardHeaders: []string{"Authorization"},
+	})
+	if err != nil {
+		t.Fatalf("new forwarding proxy: %v", err)
+	}
+	forwardingProxy.client.Transport = authRequiredTransport
+	forwardingReq := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	forwardingReq.Header.Set("Authorization", "Bearer secret")
+	forwardingRec := httptest.NewRecorder()
+
+	forwardingProxy.ServeHTTP(forwardingRec, forwardingReq)
+
+	if forwardingRec.Code != http.StatusOK {
+		t.Fatalf("forwarding status = %d, want 200", forwardingRec.Code)
+	}
+}
+
+func TestHTTPProxyForwardHeadersAreCaseInsensitive(t *testing.T) {
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		ForwardHeaders: []string{"authorization"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if got := upstreamHeaders.Get("Authorization"); got != "Bearer secret" {
+		t.Fatalf("authorization = %q, want forwarded bearer token", got)
+	}
+}
+
+func TestHTTPProxyDoesNotAddConfiguredHeaderWhenAbsent(t *testing.T) {
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		ForwardHeaders: []string{"Authorization"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if _, ok := upstreamHeaders["Authorization"]; ok {
+		t.Fatal("authorization header was added even though the client did not send it")
+	}
+}
+
+func TestHTTPProxyStripsHopByHopRequestHeaders(t *testing.T) {
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		ForwardHeaders: []string{"Authorization"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`not-json-rpc`)))
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Proxy-Authorization", "Basic proxy-secret")
+	req.Header.Set("Transfer-Encoding", "chunked")
+	req.Header.Set("Trailer", "X-Trailer")
+	req.Header.Set("Trailers", "X-Trailers")
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	for _, header := range []string{"Connection", "Proxy-Authorization", "Transfer-Encoding", "Trailer", "Trailers"} {
+		if got := upstreamHeaders.Get(header); got != "" {
+			t.Fatalf("%s = %q, want stripped", header, got)
+		}
+	}
+}
+
+func TestHTTPProxyAuditRedactsSensitiveJSONRPCParams(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit: audit.NewLogger(audit.LoggerConfig{
+			Store:     store,
+			Redactor:  middleware.NewRedactor(true, nil),
+			Transport: "http",
+		}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"authorization":"Bearer secret","bearer":"secret","token":"secret"}}}`)))
+	rec := httptest.NewRecorder()
+
+	proxy.ServeHTTP(rec, req)
+
+	if len(store.entries) != 1 {
+		t.Fatalf("stored entries = %d, want 1", len(store.entries))
+	}
+	var params map[string]any
+	if err := json.Unmarshal(store.entries[0].Params, &params); err != nil {
+		t.Fatalf("decode params: %v", err)
+	}
+	arguments, ok := params["arguments"].(map[string]any)
+	if !ok {
+		t.Fatalf("arguments = %#v, want object", params["arguments"])
+	}
+	for _, key := range []string{"authorization", "bearer", "token"} {
+		if got := arguments[key]; got != "[REDACTED]" {
+			t.Fatalf("%s = %#v, want [REDACTED]", key, got)
+		}
+	}
+}
 
 // TestHTTPProxyTimesOutUpstreamRequests verifies slow upstream requests use the
 // existing bad-gateway error path instead of hanging indefinitely.
@@ -229,6 +447,14 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+func okJSONResponse() *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))),
+		Header:     make(http.Header),
+	}
 }
 
 func testAuditLogger() *audit.Logger {
