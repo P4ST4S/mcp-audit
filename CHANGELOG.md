@@ -4,6 +4,10 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.4`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+
 ## [1.1.0] - 2026-06-11
 
 ### Added
