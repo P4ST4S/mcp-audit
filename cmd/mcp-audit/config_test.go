@@ -152,6 +152,8 @@ audit:
   rotation:
     max_size_bytes: 1024
     max_files: 3
+    interval: daily
+    max_age_days: 30
 `)
 	if err := os.WriteFile(configPath, raw, 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -169,6 +171,31 @@ audit:
 	}
 	if config.Audit.Rotation.MaxFiles != 3 {
 		t.Fatalf("max_files = %d, want 3", config.Audit.Rotation.MaxFiles)
+	}
+	if config.Audit.Rotation.Interval != "daily" {
+		t.Fatalf("interval = %q, want daily", config.Audit.Rotation.Interval)
+	}
+	if config.Audit.Rotation.MaxAgeDays != 30 {
+		t.Fatalf("max_age_days = %d, want 30", config.Audit.Rotation.MaxAgeDays)
+	}
+}
+
+func TestLoadConfigAuditRotationDefaults(t *testing.T) {
+	config, err := loadConfig(cliFlags{
+		config:   filepath.Join(t.TempDir(), "missing.yaml"),
+		upstream: "cat",
+		set: map[string]bool{
+			"upstream": true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Audit.Rotation.Interval != "" {
+		t.Fatalf("interval = %q, want empty", config.Audit.Rotation.Interval)
+	}
+	if config.Audit.Rotation.MaxAgeDays != 0 {
+		t.Fatalf("max_age_days = %d, want 0", config.Audit.Rotation.MaxAgeDays)
 	}
 }
 
@@ -253,10 +280,36 @@ func TestValidateConfigRejectsInvalidAuditRotation(t *testing.T) {
 			},
 		},
 		{
-			name: "sqlite rotation",
+			name: "negative max age days",
+			configure: func(config *appConfig) {
+				config.Audit.Rotation.MaxAgeDays = -1
+			},
+		},
+		{
+			name: "invalid interval",
+			configure: func(config *appConfig) {
+				config.Audit.Rotation.Interval = "weekly"
+			},
+		},
+		{
+			name: "sqlite size rotation",
 			configure: func(config *appConfig) {
 				config.Audit.Storage = "sqlite"
 				config.Audit.Rotation.MaxSizeBytes = 1024
+			},
+		},
+		{
+			name: "sqlite time rotation",
+			configure: func(config *appConfig) {
+				config.Audit.Storage = "sqlite"
+				config.Audit.Rotation.Interval = "daily"
+			},
+		},
+		{
+			name: "sqlite age retention",
+			configure: func(config *appConfig) {
+				config.Audit.Storage = "sqlite"
+				config.Audit.Rotation.MaxAgeDays = 30
 			},
 		},
 	}

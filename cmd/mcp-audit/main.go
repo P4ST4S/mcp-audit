@@ -67,8 +67,10 @@ type appConfig struct {
 			FlushIntervalMS int  `mapstructure:"flush_interval_ms"`
 		} `mapstructure:"async"`
 		Rotation struct {
-			MaxSizeBytes int64 `mapstructure:"max_size_bytes"`
-			MaxFiles     int   `mapstructure:"max_files"`
+			MaxSizeBytes int64  `mapstructure:"max_size_bytes"`
+			MaxFiles     int    `mapstructure:"max_files"`
+			Interval     string `mapstructure:"interval"`
+			MaxAgeDays   int    `mapstructure:"max_age_days"`
 		} `mapstructure:"rotation"`
 	} `mapstructure:"audit"`
 	Middleware struct {
@@ -399,6 +401,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.async.flush_interval_ms", 1000)
 	v.SetDefault("audit.rotation.max_size_bytes", 0)
 	v.SetDefault("audit.rotation.max_files", 0)
+	v.SetDefault("audit.rotation.interval", "")
+	v.SetDefault("audit.rotation.max_age_days", 0)
 	v.SetDefault("middleware.rate_limit.enabled", true)
 	v.SetDefault("middleware.rate_limit.requests_per_minute", 60)
 	v.SetDefault("middleware.redact.enabled", true)
@@ -512,6 +516,14 @@ func validateConfig(config appConfig) error {
 	if config.Audit.Rotation.MaxFiles < 0 {
 		return fmt.Errorf("main: audit.rotation.max_files must be >= 0")
 	}
+	if config.Audit.Rotation.MaxAgeDays < 0 {
+		return fmt.Errorf("main: audit.rotation.max_age_days must be >= 0")
+	}
+	switch config.Audit.Rotation.Interval {
+	case "", "hourly", "daily":
+	default:
+		return fmt.Errorf("main: audit.rotation.interval must be empty, hourly, or daily")
+	}
 	if config.Audit.Storage == "sqlite" && rotationConfigured(config) {
 		return fmt.Errorf("main: audit.rotation is only supported with jsonl storage")
 	}
@@ -519,7 +531,10 @@ func validateConfig(config appConfig) error {
 }
 
 func rotationConfigured(config appConfig) bool {
-	return config.Audit.Rotation.MaxSizeBytes > 0 || config.Audit.Rotation.MaxFiles > 0
+	return config.Audit.Rotation.MaxSizeBytes > 0 ||
+		config.Audit.Rotation.MaxFiles > 0 ||
+		config.Audit.Rotation.Interval != "" ||
+		config.Audit.Rotation.MaxAgeDays > 0
 }
 
 func validateForwardHeaders(headers []string) error {
@@ -605,6 +620,8 @@ func openStore(config appConfig, metricsRecorder metrics.Recorder, logger *slog.
 		jsonl, err := storage.NewJSONLStoreWithConfig(config.Audit.Path, storage.JSONLConfig{
 			MaxSizeBytes: config.Audit.Rotation.MaxSizeBytes,
 			MaxFiles:     config.Audit.Rotation.MaxFiles,
+			Interval:     config.Audit.Rotation.Interval,
+			MaxAgeDays:   config.Audit.Rotation.MaxAgeDays,
 			Log:          logger,
 		})
 		if err != nil {

@@ -61,6 +61,16 @@ func archivePathsForTest(t *testing.T, store *JSONLStore) []string {
 	return archives
 }
 
+func archiveNamesForTest(t *testing.T, store *JSONLStore) []string {
+	t.Helper()
+	archives := archivePathsForTest(t, store)
+	names := make([]string, 0, len(archives))
+	for _, path := range archives {
+		names = append(names, filepath.Base(path))
+	}
+	return names
+}
+
 func TestJSONLStoreAppendWritesEntry(t *testing.T) {
 	t.Parallel()
 	store := newJSONLStore(t)
@@ -251,6 +261,244 @@ func TestJSONLStoreRetentionKeepsNewestArchives(t *testing.T) {
 	raw := append(readFile(t, archives[0]), readFile(t, archives[1])...)
 	if bytes.Contains(raw, []byte(`"id":"retained-0"`)) {
 		t.Fatalf("oldest archive was retained unexpectedly: %s", string(raw))
+	}
+}
+
+func TestJSONLStoreHourlyRotationFiresAtCutoff(t *testing.T) {
+	now := time.Date(2026, 6, 10, 21, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		Interval: "hourly",
+		now:      func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "before-cutoff"})
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives before cutoff = %v, want none", archives)
+	}
+
+	now = time.Date(2026, 6, 10, 21, 59, 59, 999999999, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "still-before-cutoff"})
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives just before cutoff = %v, want none", archives)
+	}
+
+	now = time.Date(2026, 6, 10, 22, 0, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "at-cutoff"})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260610T220000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names = %v, want %v", names, want)
+	}
+}
+
+func TestJSONLStoreDailyRotationFiresAtCutoff(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		Interval: "daily",
+		now:      func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "before-midnight"})
+	now = time.Date(2026, 6, 10, 23, 59, 59, 999999999, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "still-before-midnight"})
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives before midnight = %v, want none", archives)
+	}
+
+	now = time.Date(2026, 6, 11, 0, 0, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "midnight"})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260611T000000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names = %v, want %v", names, want)
+	}
+}
+
+func TestJSONLStoreSkipsTimeRotationWhenActiveWasEmpty(t *testing.T) {
+	now := time.Date(2026, 6, 10, 21, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		Interval: "hourly",
+		now:      func() time.Time { return now },
+	})
+
+	now = now.Add(3 * time.Hour)
+	mustAppend(t, store, audit.Entry{ID: "first-entry-after-cutoff"})
+
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives after first append to empty file = %v, want none", archives)
+	}
+	entries, err := store.Query(audit.QueryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "first-entry-after-cutoff" {
+		t.Fatalf("entries = %+v, want first entry active", entries)
+	}
+}
+
+func TestJSONLStoreStartupDoesNotCatchUpMissedCutoffs(t *testing.T) {
+	now := time.Date(2026, 6, 10, 21, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		Interval: "hourly",
+		now:      func() time.Time { return now },
+	})
+
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives at startup = %v, want none", archives)
+	}
+
+	now = now.Add(3 * time.Hour)
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives after idle time without append = %v, want none", archives)
+	}
+}
+
+func TestJSONLStoreIdleLongThenAppendCreatesOneArchive(t *testing.T) {
+	now := time.Date(2026, 6, 10, 21, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		Interval: "hourly",
+		now:      func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "before-idle"})
+	now = now.Add(72 * time.Hour)
+	if archives := archivePathsForTest(t, store); len(archives) != 0 {
+		t.Fatalf("archives while idle = %v, want none", archives)
+	}
+
+	mustAppend(t, store, audit.Entry{ID: "after-idle"})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260613T213000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names = %v, want one archive %v", names, want)
+	}
+}
+
+func TestJSONLStoreSizeAndTimeRotationOrder(t *testing.T) {
+	now := time.Date(2026, 6, 10, 14, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		MaxSizeBytes: 2048,
+		Interval:     "hourly",
+		now:          func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "size-first", Method: strings.Repeat("x", 4096)})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260610T143000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names after size rotation = %v, want %v", names, want)
+	}
+
+	now = time.Date(2026, 6, 10, 14, 45, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "between-size-and-time"})
+	names = archiveNamesForTest(t, store)
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names before time cutoff = %v, want %v", names, want)
+	}
+
+	now = time.Date(2026, 6, 10, 15, 0, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "time-second"})
+	names = archiveNamesForTest(t, store)
+	want = []string{"audit.jsonl.20260610T143000Z", "audit.jsonl.20260610T150000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names after time rotation = %v, want %v", names, want)
+	}
+}
+
+func TestJSONLStoreTimeRotationBeforeSize(t *testing.T) {
+	now := time.Date(2026, 6, 10, 14, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		MaxSizeBytes: 1 << 20,
+		Interval:     "hourly",
+		now:          func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "before-time"})
+	now = time.Date(2026, 6, 10, 15, 0, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "time-first"})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260610T150000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names = %v, want %v", names, want)
+	}
+}
+
+func TestJSONLStoreSizeAndTimeEligibleCreateSingleArchive(t *testing.T) {
+	now := time.Date(2026, 6, 10, 14, 30, 0, 0, time.UTC)
+	store, _ := newRotatingJSONLStore(t, JSONLConfig{
+		MaxSizeBytes: 2048,
+		Interval:     "hourly",
+		now:          func() time.Time { return now },
+	})
+
+	mustAppend(t, store, audit.Entry{ID: "before-both"})
+	now = time.Date(2026, 6, 10, 15, 0, 0, 0, time.UTC)
+	mustAppend(t, store, audit.Entry{ID: "both-eligible", Method: strings.Repeat("x", 4096)})
+	names := archiveNamesForTest(t, store)
+	want := []string{"audit.jsonl.20260610T150000Z"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names = %v, want %v", names, want)
+	}
+}
+
+func TestJSONLStoreMaxAgeDaysUsesArchiveTimestamp(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, path := newRotatingJSONLStore(t, JSONLConfig{
+		MaxSizeBytes: 1,
+		MaxAgeDays:   5,
+		now:          func() time.Time { return now },
+	})
+	dir := filepath.Dir(path)
+	for _, name := range []string{
+		"audit.jsonl.20260604T115959Z",
+		"audit.jsonl.20260605T120000Z",
+		"audit.jsonl.not-an-archive",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"id":"manual"}`+"\n"), 0o600); err != nil {
+			t.Fatalf("write archive %s: %v", name, err)
+		}
+	}
+
+	mustAppend(t, store, audit.Entry{ID: "trigger-retention"})
+	names := archiveNamesForTest(t, store)
+	want := []string{
+		"audit.jsonl.20260605T120000Z",
+		"audit.jsonl.20260610T120000Z",
+	}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names after age retention = %v, want %v", names, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "audit.jsonl.not-an-archive")); err != nil {
+		t.Fatalf("invalid archive name should be ignored by retention: %v", err)
+	}
+}
+
+func TestJSONLStoreMaxAgeThenMaxFilesRetention(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	store, path := newRotatingJSONLStore(t, JSONLConfig{
+		MaxSizeBytes: 1,
+		MaxAgeDays:   5,
+		MaxFiles:     3,
+		now:          func() time.Time { return now },
+	})
+	dir := filepath.Dir(path)
+	for day := 1; day <= 10; day++ {
+		ts := time.Date(2026, 6, day, 12, 0, 0, 0, time.UTC)
+		name := "audit.jsonl." + ts.Format(archiveTimestampLayout)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"id":"manual"}`+"\n"), 0o600); err != nil {
+			t.Fatalf("write archive %s: %v", name, err)
+		}
+	}
+
+	mustAppend(t, store, audit.Entry{ID: "trigger-composed-retention"})
+	names := archiveNamesForTest(t, store)
+	want := []string{
+		"audit.jsonl.20260609T120000Z",
+		"audit.jsonl.20260610T120000Z",
+		"audit.jsonl.20260610T120000Z.1",
+	}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Fatalf("archive names after composed retention = %v, want %v", names, want)
 	}
 }
 
