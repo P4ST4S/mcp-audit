@@ -216,6 +216,8 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |
 | `audit.async.flush_interval_ms` | `1000` | Maximum time before a partial batch is flushed. |
+| `audit.rotation.max_size_bytes` | `0` | Maximum active JSONL file size before archive rotation. `0` disables built-in rotation. |
+| `audit.rotation.max_files` | `0` | Maximum number of rotated JSONL archives to keep. `0` disables retention. |
 | `middleware.rate_limit.enabled` | `true` | Enable per-client, per-tool token buckets. |
 | `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
@@ -257,6 +259,18 @@ proxy:
 ```
 
 Security note: forwarded headers, including secrets like bearer tokens, are transmitted verbatim to the upstream server. Only enable this if you control or trust the upstream MCP server. `Authorization` is the only sensitive header that can be opt-in forwarded because some MCP HTTP servers require it for upstream authentication. `Cookie`, `Set-Cookie`, and `Proxy-Authorization` are always rejected: they represent state destined for other components such as browser sessions or proxy chains and have no legitimate use in MCP request forwarding. If an existing deployment relied on implicit `Authorization` forwarding, add the config above.
+
+JSONL rotation is size-based and disabled by default. Rotated archives use UTC timestamps such as `audit.jsonl.20260610T214605Z`; if multiple rotations happen in the same second, numeric suffixes are added.
+
+```yaml
+audit:
+  storage: jsonl
+  rotation:
+    max_size_bytes: 104857600
+    max_files: 10
+```
+
+Time-based rotation, archive age retention, compression, and SQLite archival are not part of this release.
 
 CLI flags:
 

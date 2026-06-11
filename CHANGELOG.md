@@ -9,6 +9,7 @@ All notable changes to mcp-audit are documented in this file.
 - Continue stdio configuration example under `examples/continue/`.
 - Dashboard bearer-token authentication via `dashboard.auth.token`.
 - `proxy.forward_headers` for opt-in forwarding of selected HTTP request headers such as `Authorization` to trusted upstream MCP servers.
+- Size-based JSONL audit archive rotation with `audit.rotation.max_size_bytes` and archive retention with `audit.rotation.max_files`.
 
 ### Changed
 
@@ -16,6 +17,7 @@ All notable changes to mcp-audit are documented in this file.
 - Dashboard now binds to `127.0.0.1` by default through the new `dashboard.bind_address` config key, reducing accidental network exposure.
 - Dashboard authentication failures are rate-limited per remote address, and dashboard JSON API responses now send `Cache-Control: no-store`.
 - Breaking behavior change: `Authorization` headers are no longer forwarded to upstream HTTP MCP servers by default. To restore prior behavior, add `proxy.forward_headers: [Authorization]` to your config.
+- JSONL queries now include rotated `audit.jsonl.*` archives in addition to the active file.
 
 ### Migration from 1.0.0
 

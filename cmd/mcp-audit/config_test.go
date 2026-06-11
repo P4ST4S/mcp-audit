@@ -144,6 +144,34 @@ dashboard:
 	}
 }
 
+func TestLoadConfigReadsAuditRotation(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  upstream: cat
+audit:
+  rotation:
+    max_size_bytes: 1024
+    max_files: 3
+`)
+	if err := os.WriteFile(configPath, raw, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := loadConfig(cliFlags{
+		config: configPath,
+		set:    map[string]bool{},
+	})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Audit.Rotation.MaxSizeBytes != 1024 {
+		t.Fatalf("max_size_bytes = %d, want 1024", config.Audit.Rotation.MaxSizeBytes)
+	}
+	if config.Audit.Rotation.MaxFiles != 3 {
+		t.Fatalf("max_files = %d, want 3", config.Audit.Rotation.MaxFiles)
+	}
+}
+
 // TestLoadConfigUpstreamTimeoutFlagOverridesConfig verifies the CLI flag has
 // higher precedence than config.yaml for the HTTP upstream timeout.
 func TestLoadConfigUpstreamTimeoutFlagOverridesConfig(t *testing.T) {
@@ -204,6 +232,42 @@ func TestValidateConfigRejectsPartialProxyMTLSConfig(t *testing.T) {
 
 	if err := validateConfig(config); err == nil {
 		t.Fatal("expected partial mTLS config error, got nil")
+	}
+}
+
+func TestValidateConfigRejectsInvalidAuditRotation(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{
+			name: "negative max size",
+			configure: func(config *appConfig) {
+				config.Audit.Rotation.MaxSizeBytes = -1
+			},
+		},
+		{
+			name: "negative max files",
+			configure: func(config *appConfig) {
+				config.Audit.Rotation.MaxFiles = -1
+			},
+		},
+		{
+			name: "sqlite rotation",
+			configure: func(config *appConfig) {
+				config.Audit.Storage = "sqlite"
+				config.Audit.Rotation.MaxSizeBytes = 1024
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected invalid audit rotation config error, got nil")
+			}
+		})
 	}
 }
 
