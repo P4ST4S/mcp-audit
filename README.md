@@ -218,6 +218,8 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `audit.async.flush_interval_ms` | `1000` | Maximum time before a partial batch is flushed. |
 | `audit.rotation.max_size_bytes` | `0` | Maximum active JSONL file size before archive rotation. `0` disables built-in rotation. |
 | `audit.rotation.max_files` | `0` | Maximum number of rotated JSONL archives to keep. `0` disables retention. |
+| `audit.rotation.interval` | empty | Optional time-based JSONL rotation interval: `hourly` or `daily`. Empty disables time-based rotation. |
+| `audit.rotation.max_age_days` | `0` | Delete JSONL archives whose filename rotation timestamp is older than this many days. `0` disables age retention. |
 | `middleware.rate_limit.enabled` | `true` | Enable per-client, per-tool token buckets. |
 | `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
@@ -260,17 +262,19 @@ proxy:
 
 Security note: forwarded headers, including secrets like bearer tokens, are transmitted verbatim to the upstream server. Only enable this if you control or trust the upstream MCP server. `Authorization` is the only sensitive header that can be opt-in forwarded because some MCP HTTP servers require it for upstream authentication. `Cookie`, `Set-Cookie`, and `Proxy-Authorization` are always rejected: they represent state destined for other components such as browser sessions or proxy chains and have no legitimate use in MCP request forwarding. If an existing deployment relied on implicit `Authorization` forwarding, add the config above.
 
-JSONL rotation is size-based and disabled by default. Rotated archives use UTC timestamps such as `audit.jsonl.20260610T214605Z`; if multiple rotations happen in the same second, numeric suffixes are added.
+JSONL rotation is disabled by default and supports size-based and UTC time-based triggers. Rotated archives use UTC timestamps such as `audit.jsonl.20260610T214605Z`; if multiple rotations happen in the same second, numeric suffixes are added. The archive timestamp reflects the wall-clock time of the rotation event, not the cutoff that was crossed. Time-based rotation is append-driven: `mcp-audit` does not start a background timer, so if no writes occur for several days, the active file is not rotated until the next append after the cutoff. Missed cutoffs are not caught up; the next append creates at most one archive.
 
 ```yaml
 audit:
   storage: jsonl
   rotation:
     max_size_bytes: 104857600
+    interval: daily
     max_files: 10
+    max_age_days: 30
 ```
 
-Time-based rotation, archive age retention, compression, and SQLite archival are not part of this release.
+`max_age_days` uses the rotation timestamp encoded in the archive filename. This means age since rotation, not the age of the oldest entry inside the archive. Age retention runs before `max_files` retention. Compression and SQLite archival are not part of this release.
 
 CLI flags:
 

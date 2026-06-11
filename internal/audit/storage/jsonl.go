@@ -24,6 +24,8 @@ var archiveSuffixPattern = regexp.MustCompile(`^\d{8}T\d{6}Z(?:\.\d+)?$`)
 type JSONLConfig struct {
 	MaxSizeBytes int64
 	MaxFiles     int
+	Interval     string
+	MaxAgeDays   int
 	Log          *slog.Logger
 
 	now    func() time.Time
@@ -32,11 +34,12 @@ type JSONLConfig struct {
 
 // JSONLStore appends audit entries as one JSON document per line.
 type JSONLStore struct {
-	mu     sync.Mutex
-	path   string
-	config JSONLConfig
-	file   *os.File
-	writer *bufio.Writer
+	mu             sync.Mutex
+	path           string
+	config         JSONLConfig
+	file           *os.File
+	writer         *bufio.Writer
+	nextTimeCutoff time.Time
 }
 
 // NewJSONLStore opens path for append-only JSONL storage.
@@ -55,6 +58,9 @@ func NewJSONLStoreWithConfig(path string, config JSONLConfig) (*JSONLStore, erro
 	if config.MaxFiles < 0 {
 		config.MaxFiles = 0
 	}
+	if config.MaxAgeDays < 0 {
+		config.MaxAgeDays = 0
+	}
 	if config.now == nil {
 		config.now = time.Now
 	}
@@ -62,6 +68,9 @@ func NewJSONLStoreWithConfig(path string, config JSONLConfig) (*JSONLStore, erro
 		config.rename = os.Rename
 	}
 	store := &JSONLStore{path: path, config: config}
+	if config.Interval != "" {
+		store.nextTimeCutoff = nextRotationCutoff(config.now(), config.Interval)
+	}
 	if err := store.openActive(); err != nil {
 		return nil, err
 	}
@@ -81,6 +90,7 @@ func (s *JSONLStore) AppendBatch(entries []audit.Entry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	activeWasEmpty := s.activeWasEmpty()
 	encoder := json.NewEncoder(s.writer)
 	for _, entry := range entries {
 		if err := encoder.Encode(entry); err != nil {
@@ -90,7 +100,7 @@ func (s *JSONLStore) AppendBatch(entries []audit.Entry) error {
 	if err := s.writer.Flush(); err != nil {
 		return fmt.Errorf("audit: jsonl: flush: %w", err)
 	}
-	s.rotateIfNeeded()
+	s.rotateIfNeeded(activeWasEmpty)
 	return nil
 }
 
@@ -167,8 +177,20 @@ func (s *JSONLStore) openActive() error {
 	return nil
 }
 
-func (s *JSONLStore) rotateIfNeeded() {
-	if s.config.MaxSizeBytes <= 0 || s.file == nil {
+func (s *JSONLStore) activeWasEmpty() bool {
+	if s.file == nil {
+		return true
+	}
+	info, err := s.file.Stat()
+	if err != nil {
+		s.logRotationError("stat active file before append", err)
+		return false
+	}
+	return info.Size() == 0
+}
+
+func (s *JSONLStore) rotateIfNeeded(activeWasEmptyBeforeAppend bool) {
+	if s.file == nil {
 		return
 	}
 	info, err := s.file.Stat()
@@ -176,15 +198,36 @@ func (s *JSONLStore) rotateIfNeeded() {
 		s.logRotationError("stat active file", err)
 		return
 	}
-	if info.Size() < s.config.MaxSizeBytes {
+	now := s.config.now()
+	sizeTriggered := s.config.MaxSizeBytes > 0 && info.Size() >= s.config.MaxSizeBytes
+	timeTriggered := s.timeRotationDue(now)
+	advanceTimeCutoff := timeTriggered
+	if timeTriggered && activeWasEmptyBeforeAppend {
+		timeTriggered = false
+		if !sizeTriggered {
+			s.nextTimeCutoff = nextRotationCutoff(now, s.config.Interval)
+		}
+	}
+	if !sizeTriggered && !timeTriggered {
 		return
 	}
-	if err := s.rotate(); err != nil {
+	if err := s.rotate(now); err != nil {
 		s.logRotationError("rotate active file", err)
+		return
+	}
+	if advanceTimeCutoff {
+		s.nextTimeCutoff = nextRotationCutoff(now, s.config.Interval)
 	}
 }
 
-func (s *JSONLStore) rotate() error {
+func (s *JSONLStore) timeRotationDue(now time.Time) bool {
+	if s.nextTimeCutoff.IsZero() {
+		return false
+	}
+	return !now.UTC().Before(s.nextTimeCutoff)
+}
+
+func (s *JSONLStore) rotate(now time.Time) error {
 	if err := s.writer.Flush(); err != nil {
 		return fmt.Errorf("flush before rotation: %w", err)
 	}
@@ -194,7 +237,7 @@ func (s *JSONLStore) rotate() error {
 	s.file = nil
 	s.writer = nil
 
-	archivePath := s.nextArchivePath()
+	archivePath := s.nextArchivePath(now)
 	if err := s.config.rename(s.path, archivePath); err != nil {
 		if reopenErr := s.openActive(); reopenErr != nil {
 			return fmt.Errorf("rename: %w; reopen active: %v", err, reopenErr)
@@ -204,12 +247,12 @@ func (s *JSONLStore) rotate() error {
 	if err := s.openActive(); err != nil {
 		return err
 	}
-	s.applyRetention()
+	s.applyRetention(now)
 	return nil
 }
 
-func (s *JSONLStore) nextArchivePath() string {
-	base := fmt.Sprintf("%s.%s", s.path, s.config.now().UTC().Format(archiveTimestampLayout))
+func (s *JSONLStore) nextArchivePath(now time.Time) string {
+	base := fmt.Sprintf("%s.%s", s.path, now.UTC().Format(archiveTimestampLayout))
 	path := base
 	for i := 1; ; i++ {
 		if _, err := os.Stat(path); err != nil {
@@ -253,13 +296,33 @@ func (s *JSONLStore) archivePaths() ([]string, error) {
 	return paths, nil
 }
 
-func (s *JSONLStore) applyRetention() {
+func (s *JSONLStore) applyRetention(now time.Time) {
+	if s.config.MaxAgeDays <= 0 && s.config.MaxFiles <= 0 {
+		return
+	}
+	if s.config.MaxAgeDays > 0 {
+		archives, err := s.archivePaths()
+		if err != nil {
+			s.logRotationError("list archives for age retention", err)
+			return
+		}
+		cutoff := now.UTC().Add(-time.Duration(s.config.MaxAgeDays) * 24 * time.Hour)
+		for _, path := range archives {
+			rotationTime, ok := archiveRotationTime(s.path, path)
+			if !ok || !rotationTime.Before(cutoff) {
+				continue
+			}
+			if err := os.Remove(path); err != nil {
+				s.logRotationError("remove archive for age retention", err)
+			}
+		}
+	}
 	if s.config.MaxFiles <= 0 {
 		return
 	}
 	archives, err := s.archivePaths()
 	if err != nil {
-		s.logRotationError("list archives for retention", err)
+		s.logRotationError("list archives for file retention", err)
 		return
 	}
 	if len(archives) <= s.config.MaxFiles {
@@ -270,6 +333,40 @@ func (s *JSONLStore) applyRetention() {
 			s.logRotationError("remove archive for retention", err)
 		}
 	}
+}
+
+func nextRotationCutoff(now time.Time, interval string) time.Time {
+	now = now.UTC()
+	switch strings.ToLower(interval) {
+	case "hourly":
+		return now.Truncate(time.Hour).Add(time.Hour)
+	case "daily":
+		y, m, d := now.Date()
+		return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Add(24 * time.Hour)
+	default:
+		return time.Time{}
+	}
+}
+
+func archiveRotationTime(activePath, archivePath string) (time.Time, bool) {
+	base := filepath.Base(activePath) + "."
+	name := filepath.Base(archivePath)
+	if !strings.HasPrefix(name, base) {
+		return time.Time{}, false
+	}
+	suffix := strings.TrimPrefix(name, base)
+	if !archiveSuffixPattern.MatchString(suffix) {
+		return time.Time{}, false
+	}
+	timestamp := suffix
+	if dot := strings.IndexByte(timestamp, '.'); dot >= 0 {
+		timestamp = timestamp[:dot]
+	}
+	rotationTime, err := time.Parse(archiveTimestampLayout, timestamp)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return rotationTime, true
 }
 
 func (s *JSONLStore) logRotationError(operation string, err error) {
