@@ -44,6 +44,7 @@ type HTTPConfig struct {
 	Port     int
 	// UpstreamTimeoutMS bounds each HTTP request to the upstream MCP server.
 	UpstreamTimeoutMS int
+	ForwardHeaders    []string
 	TLS               httpclient.TLSConfig
 	Retry             HTTPRetryConfig
 	Audit             *audit.Logger
@@ -57,10 +58,11 @@ type HTTPConfig struct {
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
 type HTTPProxy struct {
-	config   HTTPConfig
-	upstream *url.URL
-	client   *http.Client
-	log      *slog.Logger
+	config         HTTPConfig
+	upstream       *url.URL
+	client         *http.Client
+	log            *slog.Logger
+	forwardHeaders map[string]struct{}
 }
 
 // NewHTTPProxy creates an HTTP proxy.
@@ -99,10 +101,11 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 		return nil, fmt.Errorf("proxy: http: upstream client: %w", err)
 	}
 	return &HTTPProxy{
-		config:   config,
-		upstream: upstream,
-		client:   client,
-		log:      logger,
+		config:         config,
+		upstream:       upstream,
+		client:         client,
+		log:            logger,
+		forwardHeaders: normalizedForwardHeaders(config.ForwardHeaders),
 	}, nil
 }
 
@@ -239,7 +242,7 @@ func (p *HTTPProxy) newUpstreamRequest(r *http.Request, body io.Reader) (*http.R
 	if err != nil {
 		return nil, fmt.Errorf("proxy: http: create upstream request: %w", err)
 	}
-	copyHeader(upstreamReq.Header, r.Header)
+	p.copyRequestHeader(upstreamReq.Header, r.Header)
 	if ip := clientIP(r); ip != "" {
 		if prior := upstreamReq.Header.Get("X-Forwarded-For"); prior != "" {
 			upstreamReq.Header.Set("X-Forwarded-For", prior+", "+ip)
@@ -453,13 +456,47 @@ func copyHeader(dst, src http.Header) {
 	}
 }
 
+func (p *HTTPProxy) copyRequestHeader(dst, src http.Header) {
+	for key, values := range src {
+		if stripRequestHeader(key, p.forwardHeaders) {
+			continue
+		}
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func stripRequestHeader(key string, forwardHeaders map[string]struct{}) bool {
+	if hopByHopHeader(key) {
+		return true
+	}
+	normalized := strings.ToLower(key)
+	if normalized == "authorization" {
+		_, ok := forwardHeaders[normalized]
+		return !ok
+	}
+	return false
+}
+
 func hopByHopHeader(key string) bool {
 	switch strings.ToLower(key) {
-	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade":
+	case "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "trailers", "transfer-encoding", "upgrade":
 		return true
 	default:
 		return false
 	}
+}
+
+func normalizedForwardHeaders(headers []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(headers))
+	for _, header := range headers {
+		header = strings.TrimSpace(strings.ToLower(header))
+		if header != "" {
+			out[header] = struct{}{}
+		}
+	}
+	return out
 }
 
 func joinURLPath(basePath, requestPath string) string {

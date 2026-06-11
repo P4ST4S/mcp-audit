@@ -34,10 +34,11 @@ var (
 
 type appConfig struct {
 	Proxy struct {
-		Transport         string `mapstructure:"transport"`
-		Upstream          string `mapstructure:"upstream"`
-		Port              int    `mapstructure:"port"`
-		UpstreamTimeoutMS int    `mapstructure:"upstream_timeout_ms"`
+		Transport         string   `mapstructure:"transport"`
+		Upstream          string   `mapstructure:"upstream"`
+		Port              int      `mapstructure:"port"`
+		UpstreamTimeoutMS int      `mapstructure:"upstream_timeout_ms"`
+		ForwardHeaders    []string `mapstructure:"forward_headers"`
 		TLS               struct {
 			CAFile             string `mapstructure:"ca_file"`
 			ServerName         string `mapstructure:"server_name"`
@@ -245,6 +246,7 @@ func main() {
 			Upstream:          config.Proxy.Upstream,
 			Port:              config.Proxy.Port,
 			UpstreamTimeoutMS: config.Proxy.UpstreamTimeoutMS,
+			ForwardHeaders:    config.Proxy.ForwardHeaders,
 			TLS: httpclient.TLSConfig{
 				CAFile:             config.Proxy.TLS.CAFile,
 				ServerName:         config.Proxy.TLS.ServerName,
@@ -376,6 +378,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
 	v.SetDefault("proxy.port", 4422)
 	v.SetDefault("proxy.upstream_timeout_ms", proxy.DefaultHTTPUpstreamTimeoutMS)
+	v.SetDefault("proxy.forward_headers", []string{})
 	v.SetDefault("proxy.tls.ca_file", "")
 	v.SetDefault("proxy.tls.server_name", "")
 	v.SetDefault("proxy.tls.insecure_skip_verify", false)
@@ -468,6 +471,9 @@ func validateConfig(config appConfig) error {
 	if config.Proxy.Retry.MaxRetries < 0 {
 		return fmt.Errorf("main: proxy.retry.max_retries must be >= 0")
 	}
+	if err := validateForwardHeaders(config.Proxy.ForwardHeaders); err != nil {
+		return err
+	}
 	if (config.Proxy.TLS.ClientCertFile == "") != (config.Proxy.TLS.ClientKeyFile == "") {
 		return fmt.Errorf("main: proxy.tls.client_cert_file and proxy.tls.client_key_file must be configured together")
 	}
@@ -514,6 +520,25 @@ func validateConfig(config appConfig) error {
 
 func rotationConfigured(config appConfig) bool {
 	return config.Audit.Rotation.MaxSizeBytes > 0 || config.Audit.Rotation.MaxFiles > 0
+}
+
+func validateForwardHeaders(headers []string) error {
+	for _, header := range headers {
+		if strings.TrimSpace(header) != header {
+			return fmt.Errorf("main: proxy.forward_headers contains an invalid header name")
+		}
+		if header == "" {
+			return fmt.Errorf("main: proxy.forward_headers contains an invalid header name")
+		}
+		if strings.ContainsFunc(header, unicode.IsSpace) {
+			return fmt.Errorf("main: proxy.forward_headers header %q must not contain whitespace", header)
+		}
+		switch strings.ToLower(header) {
+		case "cookie", "set-cookie", "proxy-authorization":
+			return fmt.Errorf("main: proxy.forward_headers cannot include %q", header)
+		}
+	}
+	return nil
 }
 
 func newPolicy(config appConfig) (*policy.Engine, error) {

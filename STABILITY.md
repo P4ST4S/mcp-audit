@@ -22,6 +22,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - New keys are additive and have safe defaults.
 - Removing or renaming a key requires a MAJOR bump and a deprecation period (see [Deprecation](#deprecation)).
 - The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
+- `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`) are part of the stable configuration surface.
 
 ### CLI flags
