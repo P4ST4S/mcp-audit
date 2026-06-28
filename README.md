@@ -186,6 +186,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 - [Cursor stdio configuration](examples/cursor/README.md)
 - [Continue stdio configuration](examples/continue/README.md)
 - [VS Code stdio configuration](examples/vscode/README.md)
+- [Claude Desktop stdio configuration](examples/claude-desktop/README.md)
 
 ## Configuration
 
@@ -314,9 +315,6 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
   }
 }
 ```
-
-Copy-ready client examples live under [`examples/`](examples/), including a
-self-contained [Claude Desktop example](examples/claude-desktop/).
 
 ## Dashboard
 
