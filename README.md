@@ -58,24 +58,35 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 For detailed platform-specific instructions and troubleshooting, see
 [INSTALL.md](INSTALL.md).
 
-Download a prebuilt binary from
-[GitHub Releases](https://github.com/P4ST4S/mcp-audit/releases) and run:
+Download the latest prebuilt binary and run:
 
 ```bash
-mcp-audit --version
+# Linux/macOS: resolve latest, download, verify it starts
+version=$(curl -fsSL https://api.github.com/repos/P4ST4S/mcp-audit/releases/latest \
+  | grep '"tag_name"' | head -n1 | cut -d'"' -f4 | sed 's/^v//')
+os=$(uname | tr '[:upper:]' '[:lower:]')
+arch=$(uname -m); [ "$arch" = "x86_64" ] && arch=amd64 || arch=arm64
+base="https://github.com/P4ST4S/mcp-audit/releases/download/v${version}"
+archive="mcp-audit_${version}_${os}_${arch}.tar.gz"
+curl -L -o "${archive}" "${base}/${archive}"
+tar -xzf "${archive}"
+./mcp-audit --version
 ```
 
 Run with Docker:
 
 ```bash
-docker run --rm ghcr.io/p4st4s/mcp-audit:v1.0.0 --version
+docker run --rm ghcr.io/p4st4s/mcp-audit:latest --version
 ```
 
 Install from source with Go:
 
 ```bash
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v1.0.0
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@latest
 ```
+
+To pin a specific release for reproducible installs, see
+[INSTALL.md](INSTALL.md#choosing-a-version).
 
 ## Quick Start
 

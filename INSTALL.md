@@ -12,6 +12,25 @@ This guide collects the platform-specific installation paths and gotchas for
 | Docker / GHCR | Containerized environments | Mount a data volume. |
 | `go install` | Development/source installs | Requires Go 1.22+. |
 
+## Choosing a version
+
+Most snippets in this guide use the `latest` GitHub Release. To pin a specific
+release for reproducible installs, set the `version` shell variable before
+running any snippet:
+
+```bash
+version=1.1.0
+```
+
+On PowerShell:
+
+```powershell
+$version = "1.1.0"
+```
+
+When `version` is set, snippets below build URLs from it. When `version` is
+unset, snippets resolve to GitHub's `latest` release.
+
 ## Prerequisites
 
 - `mcp-audit` itself has no runtime dependency when installed from a prebuilt
@@ -28,14 +47,19 @@ Linux archives are published for `amd64` and `arm64`. Package-manager installs
 through apt, yum, or dnf are not available today.
 
 ```bash
-version=1.0.0
+# Resolve to latest unless version is already set
+if [ -z "${version:-}" ]; then
+  version=$(curl -fsSL https://api.github.com/repos/P4ST4S/mcp-audit/releases/latest \
+    | grep '"tag_name"' | head -n1 | cut -d'"' -f4 | sed 's/^v//')
+fi
 base="https://github.com/P4ST4S/mcp-audit/releases/download/v${version}"
-curl -L -o mcp-audit.tar.gz \
-  "${base}/mcp-audit_${version}_linux_amd64.tar.gz"
+archive="mcp-audit_${version}_linux_amd64.tar.gz"
+
+curl -L -o "${archive}" "${base}/${archive}"
 curl -L -o mcp-audit_checksums.txt \
   "${base}/mcp-audit_${version}_checksums.txt"
 sha256sum -c mcp-audit_checksums.txt --ignore-missing
-tar -xzf mcp-audit.tar.gz
+tar -xzf "${archive}"
 ./mcp-audit --version
 ```
 
@@ -59,14 +83,19 @@ Use `darwin_arm64` for Apple Silicon and `darwin_amd64` for Intel Macs. A
 Homebrew formula is not available today.
 
 ```bash
-version=1.0.0
+# Resolve to latest unless version is already set
+if [ -z "${version:-}" ]; then
+  version=$(curl -fsSL https://api.github.com/repos/P4ST4S/mcp-audit/releases/latest \
+    | grep '"tag_name"' | head -n1 | cut -d'"' -f4 | sed 's/^v//')
+fi
 base="https://github.com/P4ST4S/mcp-audit/releases/download/v${version}"
-curl -L -o mcp-audit.tar.gz \
-  "${base}/mcp-audit_${version}_darwin_arm64.tar.gz"
+archive="mcp-audit_${version}_darwin_arm64.tar.gz"
+
+curl -L -o "${archive}" "${base}/${archive}"
 curl -L -o mcp-audit_checksums.txt \
   "${base}/mcp-audit_${version}_checksums.txt"
 shasum -a 256 -c mcp-audit_checksums.txt --ignore-missing
-tar -xzf mcp-audit.tar.gz
+tar -xzf "${archive}"
 ./mcp-audit --version
 ```
 
@@ -91,24 +120,28 @@ Windows builds are published as `.zip` archives for `amd64`. There is no
 emulation or build from source with Go.
 
 ```powershell
-$version = "1.0.0"
+if (-not $version) {
+  $latest = Invoke-RestMethod -Uri "https://api.github.com/repos/P4ST4S/mcp-audit/releases/latest"
+  $version = $latest.tag_name -replace '^v', ''
+}
 $base = "https://github.com/P4ST4S/mcp-audit/releases/download/v$version"
+$archive = "mcp-audit_$($version)_windows_amd64.zip"
 
 Invoke-WebRequest `
-  -Uri "$base/mcp-audit_$($version)_windows_amd64.zip" `
-  -OutFile "mcp-audit.zip"
+  -Uri "$base/$archive" `
+  -OutFile $archive
 Invoke-WebRequest `
   -Uri "$base/mcp-audit_$($version)_checksums.txt" `
   -OutFile "mcp-audit_checksums.txt"
 
 $line = Select-String -Path mcp-audit_checksums.txt -Pattern "windows_amd64.zip"
 $expected = ($line.Line -split '\s+')[0].ToLower()
-$actual   = (Get-FileHash -Algorithm SHA256 mcp-audit.zip).Hash.ToLower()
+$actual   = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLower()
 if ($actual -ne $expected) {
   throw "Checksum mismatch: expected $expected, got $actual"
 }
 
-Expand-Archive -Path mcp-audit.zip -DestinationPath . -Force
+Expand-Archive -Path $archive -DestinationPath . -Force
 .\mcp-audit.exe --version
 ```
 
@@ -140,9 +173,12 @@ container restarts.
 docker run --rm \
   -e AUDIT_SECRET=change-me \
   -v "$PWD/audit-data:/data" \
-  ghcr.io/p4st4s/mcp-audit:v1.0.0 \
+  ghcr.io/p4st4s/mcp-audit:${VERSION:-latest} \
   --version
 ```
+
+Set `VERSION` to a release tag, including the leading `v`, when you need a
+pinned container image.
 
 For a local HTTP proxy with the example stack, use Docker Compose:
 
@@ -156,15 +192,15 @@ metrics are available at `http://localhost:9091/metrics`.
 
 ## From source
 
-Use Go 1.22 or newer. `go install` is the simplest source-based install for a
-released version:
+Use Go 1.22 or newer. `go install` is the simplest source-based install for the
+latest release:
 
 ```bash
-go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@v1.0.0
+go install github.com/P4ST4S/mcp-audit/cmd/mcp-audit@latest
 mcp-audit --version
 ```
 
-Pin the version instead of using `@latest` when you need reproducible installs.
+Use `@vX.Y.Z` instead of `@latest` when you need reproducible installs.
 
 For local development, clone and build the repository:
 
