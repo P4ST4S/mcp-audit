@@ -6,6 +6,7 @@ All notable changes to mcp-audit are documented in this file.
 
 ### Added
 
+- Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
 
 ### Changed
