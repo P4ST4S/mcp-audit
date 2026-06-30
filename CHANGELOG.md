@@ -8,10 +8,12 @@ All notable changes to mcp-audit are documented in this file.
 
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
+- Claude Desktop stdio configuration example under `examples/claude-desktop/`.
 
 ### Changed
 
 - Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.4`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+- Install snippets in `README.md` and `INSTALL.md` now resolve to the latest GitHub Release dynamically. To pin a specific release, set the `version` shell variable before running snippets. See `INSTALL.md` "Choosing a version".
 
 ## [1.1.0] - 2026-06-11
 
