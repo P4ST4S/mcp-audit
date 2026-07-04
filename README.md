@@ -125,6 +125,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 - [Continue stdio configuration](examples/continue/README.md)
 - [VS Code stdio configuration](examples/vscode/README.md)
 - [Claude Desktop stdio configuration](examples/claude-desktop/README.md)
+- [Zed stdio configuration](examples/zed/README.md)
 
 ## Configuration
 
