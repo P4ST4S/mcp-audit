@@ -38,6 +38,17 @@ auth:
     issuer: static
     roles: []
     scopes: []
+  oidc:
+    issuer: ""
+    audience: ""
+    jwks_uri: ""
+    client_id_claim: client_id
+    roles_claim: roles
+    scopes_claim: scope
+    allowed_methods: [RS256, RS384, RS512, ES256, ES384, ES512, EdDSA]
+    clock_skew: 30s
+    http_timeout: 5s
+    refresh_interval: 5m
 
 audit:
   storage: jsonl

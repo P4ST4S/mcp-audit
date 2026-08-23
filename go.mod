@@ -5,14 +5,17 @@ go 1.22
 toolchain go1.26.4
 
 require (
+	github.com/MicahParks/keyfunc/v3 v3.6.2
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/oklog/ulid/v2 v2.1.1
 	github.com/prometheus/client_golang v1.22.0
 	github.com/spf13/viper v1.18.2
-	golang.org/x/time v0.6.0
+	golang.org/x/time v0.9.0
 	modernc.org/sqlite v1.28.0
 )
 
 require (
+	github.com/MicahParks/jwkset v0.11.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

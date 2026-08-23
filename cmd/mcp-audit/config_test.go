@@ -494,6 +494,47 @@ func TestValidateConfigRejectsInvalidAuth(t *testing.T) {
 	}
 }
 
+func TestValidateOIDCConfig(t *testing.T) {
+	valid := func() appConfig {
+		config := minimalValidHTTPConfig()
+		config.Auth.Mode = "oidc"
+		config.Auth.OIDC.Issuer = "https://issuer.example.com/tenant"
+		config.Auth.OIDC.Audience = "mcp-audit"
+		config.Auth.OIDC.JWKSURI = "https://issuer.example.com/.well-known/jwks.json"
+		config.Auth.OIDC.ClientIDClaim = "client_id"
+		config.Auth.OIDC.RolesClaim = "roles"
+		config.Auth.OIDC.ScopesClaim = "scope"
+		config.Auth.OIDC.AllowedMethods = []string{"RS256"}
+		config.Auth.OIDC.HTTPTimeout = time.Second
+		config.Auth.OIDC.RefreshInterval = time.Minute
+		return config
+	}
+	if err := validateConfig(valid()); err != nil {
+		t.Fatalf("valid OIDC config: %v", err)
+	}
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "missing issuer", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "" }},
+		{name: "insecure remote issuer", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "http://issuer.example.com" }},
+		{name: "insecure remote JWKS", configure: func(config *appConfig) { config.Auth.OIDC.JWKSURI = "http://issuer.example.com/jwks" }},
+		{name: "issuer query", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "https://issuer.example.com?tenant=1" }},
+		{name: "symmetric algorithm", configure: func(config *appConfig) { config.Auth.OIDC.AllowedMethods = []string{"HS256"} }},
+		{name: "empty algorithms", configure: func(config *appConfig) { config.Auth.OIDC.AllowedMethods = nil }},
+		{name: "negative clock skew", configure: func(config *appConfig) { config.Auth.OIDC.ClockSkew = -time.Second }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := valid()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected OIDC validation error")
+			}
+		})
+	}
+}
+
 func TestValidateConfigRejectsInvalidDashboardConfig(t *testing.T) {
 	cases := []struct {
 		name      string

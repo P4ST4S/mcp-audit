@@ -36,20 +36,28 @@ func NewStaticBearerAuthenticator(token string, principal Principal) (*StaticBea
 
 // Authenticate validates an RFC 6750-style Authorization header.
 func (a *StaticBearerAuthenticator) Authenticate(_ context.Context, request *http.Request) (*Principal, error) {
-	values := request.Header.Values("Authorization")
-	if len(values) == 0 {
-		return nil, ErrMissingCredentials
-	}
-	if len(values) != 1 {
-		return nil, ErrInvalidCredentials
-	}
-	scheme, token, ok := strings.Cut(values[0], " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" || strings.ContainsAny(token, " \t\r\n") {
-		return nil, ErrInvalidCredentials
+	token, err := bearerToken(request)
+	if err != nil {
+		return nil, err
 	}
 	presentedHash := sha256.Sum256([]byte(token))
 	if subtle.ConstantTimeCompare(presentedHash[:], a.tokenHash[:]) != 1 {
 		return nil, ErrInvalidCredentials
 	}
 	return clonePrincipal(a.principal), nil
+}
+
+func bearerToken(request *http.Request) (string, error) {
+	values := request.Header.Values("Authorization")
+	if len(values) == 0 {
+		return "", ErrMissingCredentials
+	}
+	if len(values) != 1 {
+		return "", ErrInvalidCredentials
+	}
+	scheme, token, ok := strings.Cut(values[0], " ")
+	if !ok || !strings.EqualFold(scheme, "Bearer") || token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", ErrInvalidCredentials
+	}
+	return token, nil
 }
