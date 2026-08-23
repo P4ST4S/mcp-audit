@@ -69,6 +69,9 @@ Successful JSON API responses include `Cache-Control: no-store`.
 
 The proxy-emitted JSON-RPC error codes (`-32029` rate-limited, `-32030` policy denied) are stable.
 
+MCP metadata mismatches are rejected before upstream forwarding with HTTP `400`
+and the standard JSON-RPC invalid-request code `-32600`.
+
 ## Not part of the stable surface
 
 The following are explicitly **not** covered by the stability policy and may change in any release, including MINOR:

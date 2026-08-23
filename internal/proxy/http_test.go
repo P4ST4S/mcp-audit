@@ -25,6 +25,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
+	"github.com/P4ST4S/mcp-audit/internal/mcp"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
@@ -395,6 +396,167 @@ func TestHTTPProxyValidatesHost(t *testing.T) {
 		if rec.Code != tc.status {
 			t.Fatalf("host %q status = %d, want %d", tc.host, rec.Code, tc.status)
 		}
+	}
+}
+
+func TestHTTPProxyForwardsValidMCP2026RequestUnchanged(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"protocolRevision":"2026-07-28"},"requestState":{"round":2},"cache":{"ttl":60}}}`)
+	var upstreamBody []byte
+	var upstreamHeaders http.Header
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    testAuditLogger(),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		upstreamHeaders = r.Header.Clone()
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/mcp", bytes.NewReader(body))
+	req.Header.Set(mcp.HeaderMethod, "tools/list")
+	req.Header.Set(mcp.HeaderProtocolVersion, "2026-07-28")
+	req.Header.Set("Mcp-Session-Id", "session-123")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if !bytes.Equal(upstreamBody, body) {
+		t.Fatalf("upstream body = %s, want %s", upstreamBody, body)
+	}
+	for header, want := range map[string]string{
+		mcp.HeaderMethod:          "tools/list",
+		mcp.HeaderProtocolVersion: "2026-07-28",
+		"Mcp-Session-Id":          "session-123",
+	} {
+		if got := upstreamHeaders.Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestHTTPProxyRejectsInconsistentMCPMetadata(t *testing.T) {
+	body := []byte(`{"jsonrpc":"2.0","id":"call-1","method":"tools/call","params":{"name":"delete_file"}}`)
+	cases := []struct {
+		name    string
+		headers http.Header
+	}{
+		{name: "method", headers: http.Header{mcp.HeaderMethod: {"resources/read"}}},
+		{name: "name", headers: http.Header{mcp.HeaderName: {"read_file"}}},
+		{name: "revision", headers: http.Header{mcp.HeaderProtocolVersion: {"2099-01-01"}}},
+		{name: "duplicate", headers: http.Header{mcp.HeaderMethod: {"tools/call", "resources/read"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			upstreamCalls := 0
+			proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+			if err != nil {
+				t.Fatalf("new http proxy: %v", err)
+			}
+			proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return okJSONResponse(), nil
+			})
+			req := httptest.NewRequest(http.MethodPost, "http://proxy.local/mcp", bytes.NewReader(body))
+			req.Header = tc.headers
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", rec.Code)
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			var response struct {
+				ID    string          `json:"id"`
+				Error *audit.RPCError `json:"error"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if response.ID != "call-1" || response.Error == nil || response.Error.Code != -32600 {
+				t.Fatalf("response = %#v", response)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q", got)
+			}
+		})
+	}
+}
+
+func TestHTTPProxyForwardsProtocolOnlyStreamableGET(t *testing.T) {
+	var upstreamMethod string
+	var protocolVersion string
+	proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamMethod = r.Method
+		protocolVersion = r.Header.Get(mcp.HeaderProtocolVersion)
+		return &http.Response{StatusCode: http.StatusAccepted, Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/mcp", nil)
+	req.Header.Set(mcp.HeaderProtocolVersion, "2026-07-28")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted || upstreamMethod != http.MethodGet || protocolVersion != "2026-07-28" {
+		t.Fatalf("status/method/revision = %d/%q/%q", rec.Code, upstreamMethod, protocolVersion)
+	}
+}
+
+func TestHTTPProxyStreamsMCP2026SSEUnchanged(t *testing.T) {
+	event := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n"
+	proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(event)),
+			Header: http.Header{
+				"Content-Type":   {"text/event-stream"},
+				"Mcp-Session-Id": {"session-123"},
+			},
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodGet, "http://proxy.local/mcp", nil)
+	req.Header.Set(mcp.HeaderProtocolVersion, "2026-07-28")
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || rec.Body.String() != event {
+		t.Fatalf("status/body = %d/%q", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Mcp-Session-Id"); got != "session-123" {
+		t.Fatalf("Mcp-Session-Id = %q", got)
+	}
+}
+
+func TestHTTPProxyPreservesLegacyUninspectableTraffic(t *testing.T) {
+	upstreamCalls := 0
+	proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local"})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return okJSONResponse(), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/mcp", bytes.NewReader([]byte("not-json-rpc")))
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || upstreamCalls != 1 {
+		t.Fatalf("status/upstream calls = %d/%d, want 200/1", rec.Code, upstreamCalls)
 	}
 }
 

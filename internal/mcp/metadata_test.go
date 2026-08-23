@@ -109,3 +109,19 @@ func TestInspectRequestDoesNotMutateBody(t *testing.T) {
 		t.Fatalf("body mutated: %s", body)
 	}
 }
+
+func TestInspectRequestAcceptsProtocolOnlyStreamingRequest(t *testing.T) {
+	metadata, err := InspectRequest(http.Header{HeaderProtocolVersion: {"2026-07-28"}}, nil)
+	if err != nil {
+		t.Fatalf("inspect request: %v", err)
+	}
+	if metadata.ProtocolRevision != Protocol20260728 || metadata.Method != "" {
+		t.Fatalf("metadata = %#v", metadata)
+	}
+}
+
+func TestInspectRequestRejectsMethodHeaderWithoutBody(t *testing.T) {
+	if _, err := InspectRequest(http.Header{HeaderMethod: {"tools/list"}}, nil); err == nil {
+		t.Fatal("expected method-without-body error")
+	}
+}

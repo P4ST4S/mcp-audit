@@ -22,6 +22,9 @@ All notable changes to mcp-audit are documented in this file.
   `mcp_audit_http_request_rejections_total` metrics.
 - `proxy.bind_address` with an explicit `127.0.0.1` value in the distributed
   config. Omitted legacy configs retain all-interface binding with a warning.
+- MCP 2026-07-28 request inspection and Streamable HTTP forwarding, including
+  consistency validation for `Mcp-Method`, `Mcp-Name`, and
+  `Mcp-Protocol-Version` headers.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
 - Claude Desktop stdio configuration example under `examples/claude-desktop/`.

@@ -131,6 +131,11 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
 `mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values, and `AUDIT_SECRET` overrides `audit.secret`.
 
+For Streamable HTTP clients, the proxy forwards MCP session, cache, and
+multi-round-trip metadata unchanged. When `Mcp-Method`, `Mcp-Name`, or
+`Mcp-Protocol-Version` are present, they are validated against the JSON-RPC
+body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
+
 | Key | Default | Description |
 | --- | --- | --- |
 | `proxy.transport` | `stdio` | Proxy transport: `stdio` or `http`. |

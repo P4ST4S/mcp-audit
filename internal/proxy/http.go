@@ -293,6 +293,10 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = r.Body.Close()
+	if err := p.validateMCPRequest(r.Header, body); err != nil {
+		p.writeMCPMetadataError(w, body, err)
+		return
+	}
 
 	pending, reject := p.observeHTTPRequest(body, startedAt, principal)
 	if reject != nil {
@@ -331,6 +335,40 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *HTTPProxy) rejectAuthentication(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="mcp-audit"`)
 	p.rejectHTTPRequest(w, http.StatusUnauthorized, "authentication", "authentication required")
+}
+
+func (p *HTTPProxy) validateMCPRequest(headers http.Header, body []byte) error {
+	metadata, err := mcp.InspectRequest(headers, body)
+	if err != nil {
+		if !hasMCPMetadataHeaders(headers) {
+			p.log.Debug("request is not inspectable MCP JSON-RPC", "error", err)
+			return nil
+		}
+		return err
+	}
+	if metadata.ProtocolRevision == mcp.Protocol20260728 {
+		p.log.Debug("inspected MCP 2026 request", "method", metadata.Method, "name", metadata.Name, "request_id", metadata.RequestID)
+	}
+	return nil
+}
+
+func (p *HTTPProxy) writeMCPMetadataError(w http.ResponseWriter, body []byte, cause error) {
+	p.log.Warn("rejected inconsistent MCP request metadata", "error", cause)
+	id := json.RawMessage("null")
+	if messages, err := mcp.DecodeMessages(body); err == nil && len(messages) == 1 && len(messages[0].ID) > 0 {
+		id = messages[0].ID
+	}
+	rpcErr := &audit.RPCError{Code: -32600, Message: "invalid MCP request metadata"}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(buildErrorResponse(id, rpcErr))
+}
+
+func hasMCPMetadataHeaders(headers http.Header) bool {
+	return len(headers.Values(mcp.HeaderMethod)) > 0 ||
+		len(headers.Values(mcp.HeaderName)) > 0 ||
+		len(headers.Values(mcp.HeaderProtocolVersion)) > 0
 }
 
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
