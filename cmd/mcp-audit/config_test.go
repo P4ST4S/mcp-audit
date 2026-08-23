@@ -103,10 +103,14 @@ func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
 func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
+  transport: http
   upstream: https://upstream.local
   forward_headers:
     - Authorization
   tls:
+    enabled: true
+    cert_file: /tmp/server.crt
+    key_file: /tmp/server.key
     ca_file: /tmp/ca.pem
     server_name: mcp.internal
     insecure_skip_verify: true
@@ -130,6 +134,9 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 	}
 	if config.Proxy.TLS.CAFile != "/tmp/ca.pem" {
 		t.Fatalf("ca_file = %q", config.Proxy.TLS.CAFile)
+	}
+	if !config.Proxy.TLS.Enabled || config.Proxy.TLS.CertFile != "/tmp/server.crt" || config.Proxy.TLS.KeyFile != "/tmp/server.key" {
+		t.Fatalf("incoming tls = %t/%q/%q", config.Proxy.TLS.Enabled, config.Proxy.TLS.CertFile, config.Proxy.TLS.KeyFile)
 	}
 	if config.Proxy.TLS.ServerName != "mcp.internal" {
 		t.Fatalf("server_name = %q", config.Proxy.TLS.ServerName)
@@ -324,6 +331,33 @@ func TestValidateConfigRejectsPartialProxyMTLSConfig(t *testing.T) {
 
 	if err := validateConfig(config); err == nil {
 		t.Fatal("expected partial mTLS config error, got nil")
+	}
+}
+
+func TestValidateConfigRejectsInvalidIncomingTLS(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport string
+		enabled   bool
+		certFile  string
+		keyFile   string
+	}{
+		{name: "enabled without certificate", transport: "http", enabled: true},
+		{name: "enabled without key", transport: "http", enabled: true, certFile: "server.crt"},
+		{name: "certificate while disabled", transport: "http", certFile: "server.crt", keyFile: "server.key"},
+		{name: "enabled on stdio", transport: "stdio", enabled: true, certFile: "server.crt", keyFile: "server.key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidHTTPConfig()
+			config.Proxy.Transport = tc.transport
+			config.Proxy.TLS.Enabled = tc.enabled
+			config.Proxy.TLS.CertFile = tc.certFile
+			config.Proxy.TLS.KeyFile = tc.keyFile
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected incoming TLS validation error, got nil")
+			}
+		})
 	}
 }
 

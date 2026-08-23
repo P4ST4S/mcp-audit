@@ -147,6 +147,9 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.http.allowed_origins` | empty | Optional exact browser Origin allowlist. Requests without `Origin` remain valid non-browser clients. |
 | `proxy.http.allowed_hosts` | empty | Optional Host allowlist for DNS-rebinding protection. Entries are hostnames or IP addresses with optional ports. |
 | `proxy.forward_headers` | empty | Request headers allowed to bypass the default upstream strip list. Use `["Authorization"]` only when the upstream MCP HTTP server requires bearer-token auth. |
+| `proxy.tls.enabled` | `false` | Serve incoming proxy connections over TLS. Requires `proxy.tls.cert_file` and `proxy.tls.key_file`. |
+| `proxy.tls.cert_file` | empty | PEM certificate chain for incoming TLS connections. |
+| `proxy.tls.key_file` | empty | PEM private key for incoming TLS connections. |
 | `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
 | `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
 | `proxy.tls.insecure_skip_verify` | `false` | Skip upstream TLS certificate verification. Intended only for local testing. |
