@@ -218,18 +218,13 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 	for _, msg := range messages {
 		if msg.Method != "" {
 			toolName := toolNameFromParams(msg.Method, msg.Params)
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, time.Now())
 			if msg.Method == "tools/call" {
 				decision := p.evaluatePolicy(toolName)
 				p.recordPolicyDecision(decision)
 				if !decision.Allowed {
 					rpcErr := policyError(decision)
-					if err := p.record(pendingCall{
-						method:    msg.Method,
-						requestID: jsonRPCID(msg.ID),
-						toolName:  toolName,
-						params:    msg.Params,
-						startedAt: time.Now(),
-					}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+					if err := p.record(call, audit.OutcomeDenied, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 						p.log.Error("failed to audit policy denied call", "error", err)
 					}
 					return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
@@ -240,35 +235,23 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 					p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
 				}
 				rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
-				if err := p.record(pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+				if err := p.record(call, audit.OutcomeRateLimited, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 					p.log.Error("failed to audit rate limited call", "error", err)
 				}
 				return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
 			}
 			if len(msg.ID) > 0 {
-				p.state.rememberClient(string(msg.ID), pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				})
+				p.state.rememberClient(string(msg.ID), call)
 				continue
 			}
-			if err := p.record(pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: time.Now()}, audit.DirectionClientToServer, nil, nil); err != nil {
+			if err := p.record(call, audit.OutcomeSuccess, audit.DirectionClientToServer, nil, nil); err != nil {
 				p.log.Error("failed to audit client notification", "error", err)
 			}
 			continue
 		}
 		if len(msg.ID) > 0 {
 			if call, ok := p.state.takeServer(string(msg.ID)); ok {
-				if err := p.record(call, audit.DirectionClientToServer, msg.Result, msg.Error); err != nil {
+				if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionClientToServer, msg.Result, msg.Error); err != nil {
 					p.log.Error("failed to audit client response", "error", err)
 				}
 			}
@@ -286,24 +269,19 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	for _, msg := range messages {
 		if msg.Method != "" {
 			toolName := toolNameFromParams(msg.Method, msg.Params)
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, time.Now())
 			if len(msg.ID) > 0 {
-				p.state.rememberServer(string(msg.ID), pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				})
+				p.state.rememberServer(string(msg.ID), call)
 				continue
 			}
-			if err := p.record(pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: time.Now()}, audit.DirectionServerToClient, nil, nil); err != nil {
+			if err := p.record(call, audit.OutcomeSuccess, audit.DirectionServerToClient, nil, nil); err != nil {
 				p.log.Error("failed to audit server notification", "error", err)
 			}
 			continue
 		}
 		if len(msg.ID) > 0 {
 			if call, ok := p.state.takeClient(string(msg.ID)); ok {
-				if err := p.record(call, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
+				if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
 					p.log.Error("failed to audit server response", "error", err)
 				}
 			}
@@ -311,18 +289,30 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	}
 }
 
-func (p *StdioProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
-	return p.config.Audit.Record(audit.Entry{
-		Direction:  direction,
-		Method:     call.method,
-		RequestID:  call.requestID,
-		ToolName:   call.toolName,
-		Params:     call.params,
-		Result:     result,
-		Error:      rpcErr,
-		DurationMs: time.Since(call.startedAt).Milliseconds(),
-		ClientID:   p.config.ClientID,
-		ServerID:   p.config.ServerID,
+func (p *StdioProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, startedAt time.Time) pendingCall {
+	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
+		Method:    method,
+		RequestID: requestID,
+		ToolName:  toolName,
+		Params:    params,
+		ClientID:  p.config.ClientID,
+		ServerID:  p.config.ServerID,
+	}, startedAt)
+	if err != nil {
+		p.log.Error("failed to start audit operation", "method", method, "error", err)
+	}
+	return pendingCall{operation: operation, startedAt: startedAt}
+}
+
+func (p *StdioProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	if call.operation == nil {
+		return fmt.Errorf("proxy: stdio: audit operation unavailable")
+	}
+	return call.operation.Finalize(audit.Completion{
+		Outcome:   outcome,
+		Direction: direction,
+		Result:    result,
+		Error:     rpcErr,
 	})
 }
 
@@ -345,10 +335,7 @@ func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
 }
 
 type pendingCall struct {
-	method    string
-	requestID string
-	toolName  string
-	params    json.RawMessage
+	operation *audit.Operation
 	startedAt time.Time
 }
 

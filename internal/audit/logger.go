@@ -17,6 +17,39 @@ const DirectionClientToServer = "client→server"
 // DirectionServerToClient names server-to-client audit direction.
 const DirectionServerToClient = "server→client"
 
+// Outcome is the terminal state of an accepted audit operation.
+type Outcome string
+
+const (
+	OutcomeSuccess                   Outcome = "success"
+	OutcomeDenied                    Outcome = "denied"
+	OutcomeRateLimited               Outcome = "rate_limited"
+	OutcomeUpstreamError             Outcome = "upstream_error"
+	OutcomeTimeout                   Outcome = "timeout"
+	OutcomeClientDisconnect          Outcome = "client_disconnect"
+	OutcomeMalformedUpstreamResponse Outcome = "malformed_upstream_response"
+	OutcomeCancelled                 Outcome = "cancelled"
+	OutcomeInternalError             Outcome = "internal_error"
+)
+
+// Valid reports whether outcome is a supported terminal state.
+func (o Outcome) Valid() bool {
+	switch o {
+	case OutcomeSuccess,
+		OutcomeDenied,
+		OutcomeRateLimited,
+		OutcomeUpstreamError,
+		OutcomeTimeout,
+		OutcomeClientDisconnect,
+		OutcomeMalformedUpstreamResponse,
+		OutcomeCancelled,
+		OutcomeInternalError:
+		return true
+	default:
+		return false
+	}
+}
+
 // RPCError represents a JSON-RPC error object.
 type RPCError struct {
 	Code    int             `json:"code"`
@@ -26,20 +59,22 @@ type RPCError struct {
 
 // Entry is a single audited JSON-RPC exchange or message.
 type Entry struct {
-	ID         string          `json:"id"`
-	Timestamp  time.Time       `json:"timestamp"`
-	Direction  string          `json:"direction"`
-	Transport  string          `json:"transport"`
-	Method     string          `json:"method"`
-	RequestID  string          `json:"request_id,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	Params     json.RawMessage `json:"params,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	Error      *RPCError       `json:"error,omitempty"`
-	DurationMs int64           `json:"duration_ms"`
-	ClientID   string          `json:"client_id"`
-	ServerID   string          `json:"server_id"`
-	Signature  string          `json:"signature"`
+	ID               string          `json:"id"`
+	Timestamp        time.Time       `json:"timestamp"`
+	AuditOperationID string          `json:"audit_operation_id,omitempty"`
+	Outcome          Outcome         `json:"outcome,omitempty"`
+	Direction        string          `json:"direction"`
+	Transport        string          `json:"transport"`
+	Method           string          `json:"method"`
+	RequestID        string          `json:"request_id,omitempty"`
+	ToolName         string          `json:"tool_name,omitempty"`
+	Params           json.RawMessage `json:"params,omitempty"`
+	Result           json.RawMessage `json:"result,omitempty"`
+	Error            *RPCError       `json:"error,omitempty"`
+	DurationMs       int64           `json:"duration_ms"`
+	ClientID         string          `json:"client_id"`
+	ServerID         string          `json:"server_id"`
+	Signature        string          `json:"signature"`
 }
 
 // Store persists and queries audit entries.
