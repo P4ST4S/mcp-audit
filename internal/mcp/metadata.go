@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,16 +34,26 @@ type RequestMetadata struct {
 
 // InspectRequest validates MCP headers against a single JSON-RPC request body.
 func InspectRequest(headers http.Header, body []byte) (RequestMetadata, error) {
+	inspectedHeaders, err := inspectHeaders(headers)
+	if err != nil {
+		return RequestMetadata{}, err
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		if inspectedHeaders.method != "" || inspectedHeaders.name != "" {
+			return RequestMetadata{}, fmt.Errorf("mcp: method and name headers require a JSON-RPC request body")
+		}
+		revision, err := protocolRevision(inspectedHeaders.revision, Message{})
+		if err != nil {
+			return RequestMetadata{}, err
+		}
+		return RequestMetadata{ProtocolRevision: revision}, nil
+	}
 	messages, err := DecodeMessages(body)
 	if err != nil {
 		return RequestMetadata{}, err
 	}
 	if len(messages) != 1 {
 		return RequestMetadata{}, fmt.Errorf("mcp: request metadata headers cannot describe a batch")
-	}
-	inspectedHeaders, err := inspectHeaders(headers)
-	if err != nil {
-		return RequestMetadata{}, err
 	}
 	message := messages[0]
 	name := nameFromMessage(message)
