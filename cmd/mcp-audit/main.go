@@ -16,6 +16,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/metrics"
@@ -65,6 +66,17 @@ type appConfig struct {
 		ClientID string `mapstructure:"client_id"`
 		ServerID string `mapstructure:"server_id"`
 	} `mapstructure:"proxy"`
+	Auth struct {
+		Mode   string `mapstructure:"mode"`
+		Static struct {
+			BearerToken string   `mapstructure:"bearer_token"`
+			Subject     string   `mapstructure:"subject"`
+			ClientID    string   `mapstructure:"client_id"`
+			Issuer      string   `mapstructure:"issuer"`
+			Roles       []string `mapstructure:"roles"`
+			Scopes      []string `mapstructure:"scopes"`
+		} `mapstructure:"static"`
+	} `mapstructure:"auth"`
 	Audit struct {
 		Storage    string `mapstructure:"storage"`
 		Path       string `mapstructure:"path"`
@@ -225,6 +237,11 @@ func main() {
 		Trace:     traceExporter,
 	})
 	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
+	authenticator, err := newAuthenticator(config)
+	if err != nil {
+		logger.Error("failed to initialize client authentication", "error", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -272,6 +289,7 @@ func main() {
 			IdleTimeout:         config.Proxy.HTTP.IdleTimeout,
 			AllowedOrigins:      config.Proxy.HTTP.AllowedOrigins,
 			AllowedHosts:        config.Proxy.HTTP.AllowedHosts,
+			Authenticator:       authenticator,
 			TLS: httpclient.TLSConfig{
 				CAFile:             config.Proxy.TLS.CAFile,
 				ServerName:         config.Proxy.TLS.ServerName,
@@ -383,6 +401,9 @@ func loadConfig(flags cliFlags) (appConfig, error) {
 	if err := v.Unmarshal(&config); err != nil {
 		return appConfig{}, fmt.Errorf("main: decode config: %w", err)
 	}
+	if token := os.Getenv("MCP_AUDIT_STATIC_BEARER_TOKEN"); token != "" {
+		config.Auth.Static.BearerToken = token
+	}
 	return config, validateConfig(config)
 }
 
@@ -423,6 +444,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.retry.max_interval_ms", 2000)
 	v.SetDefault("proxy.client_id", "claude-desktop")
 	v.SetDefault("proxy.server_id", "filesystem")
+	v.SetDefault("auth.mode", auth.ModeNone)
+	v.SetDefault("auth.static.bearer_token", "")
+	v.SetDefault("auth.static.subject", "local")
+	v.SetDefault("auth.static.client_id", "")
+	v.SetDefault("auth.static.issuer", "static")
+	v.SetDefault("auth.static.roles", []string{})
+	v.SetDefault("auth.static.scopes", []string{})
 	v.SetDefault("audit.storage", "jsonl")
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
@@ -531,6 +559,9 @@ func validateConfig(config appConfig) error {
 	if (config.Proxy.TLS.ClientCertFile == "") != (config.Proxy.TLS.ClientKeyFile == "") {
 		return fmt.Errorf("main: proxy.tls.client_cert_file and proxy.tls.client_key_file must be configured together")
 	}
+	if err := validateAuthConfig(config); err != nil {
+		return err
+	}
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")
 	}
@@ -578,6 +609,53 @@ func validateConfig(config appConfig) error {
 		return fmt.Errorf("main: audit.rotation is only supported with jsonl storage")
 	}
 	return nil
+}
+
+func validateAuthConfig(config appConfig) error {
+	if config.Auth.Static.ClientID == "" {
+		config.Auth.Static.ClientID = config.Proxy.ClientID
+	}
+	if config.Auth.Static.Subject == "" || config.Auth.Static.ClientID == "" {
+		return fmt.Errorf("main: auth.static.subject and client_id are required")
+	}
+	switch config.Auth.Mode {
+	case auth.ModeNone:
+		if config.Auth.Static.BearerToken != "" {
+			return fmt.Errorf("main: auth.static.bearer_token requires auth.mode=static_bearer")
+		}
+	case auth.ModeStaticBearer:
+		if config.Proxy.Transport != "http" {
+			return fmt.Errorf("main: auth.mode=static_bearer requires proxy.transport=http")
+		}
+		if len(config.Auth.Static.BearerToken) < 32 {
+			return fmt.Errorf("main: auth.static.bearer_token must be at least 32 bytes")
+		}
+	default:
+		return fmt.Errorf("main: auth.mode must be none or static_bearer")
+	}
+	return nil
+}
+
+func newAuthenticator(config appConfig) (auth.Authenticator, error) {
+	clientID := config.Auth.Static.ClientID
+	if clientID == "" {
+		clientID = config.Proxy.ClientID
+	}
+	principal := auth.Principal{
+		Subject:  config.Auth.Static.Subject,
+		ClientID: clientID,
+		Issuer:   config.Auth.Static.Issuer,
+		Roles:    config.Auth.Static.Roles,
+		Scopes:   config.Auth.Static.Scopes,
+	}
+	switch config.Auth.Mode {
+	case auth.ModeNone:
+		return auth.NewNoneAuthenticator(principal)
+	case auth.ModeStaticBearer:
+		return auth.NewStaticBearerAuthenticator(config.Auth.Static.BearerToken, principal)
+	default:
+		return nil, fmt.Errorf("main: unsupported auth mode %q", config.Auth.Mode)
+	}
 }
 
 func rotationConfigured(config appConfig) bool {

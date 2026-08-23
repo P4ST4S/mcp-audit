@@ -24,6 +24,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
 - `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
 - `proxy.bind_address` and the `proxy.http.*` request-limit, timeout, Origin, and Host validation keys are part of the stable configuration surface.
+- The `auth.mode` and `auth.static.*` keys are part of the stable configuration surface.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`, `audit.rotation.interval`, `audit.rotation.max_age_days`) are part of the stable configuration surface.
 
 ### CLI flags
@@ -42,7 +43,7 @@ The signature is computed over `id + timestamp + method + tool_name + params`. C
 
 Metric names and label sets are stable. The `mcp_audit_*` prefix is reserved. New metrics are additive. A metric is never removed or renamed in a MINOR release.
 
-`mcp_audit_http_request_rejections_total{reason}` counts requests rejected before upstream forwarding. Stable reasons are `body_too_large`, `origin`, and `host`.
+`mcp_audit_http_request_rejections_total{reason}` counts requests rejected before upstream forwarding. Stable reasons are `body_too_large`, `origin`, `host`, and `authentication`.
 
 ### OTLP export attributes
 

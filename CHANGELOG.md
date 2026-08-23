@@ -6,6 +6,8 @@ All notable changes to mcp-audit are documented in this file.
 
 ### Added
 
+- HTTP security principals with explicit local identity and optional static
+  bearer authentication backed by constant-time token comparison.
 - HTTP proxy request-body and header limits, complete server timeouts, optional
   browser Origin validation, Host validation for DNS-rebinding protection, and
   `mcp_audit_http_request_rejections_total` metrics.

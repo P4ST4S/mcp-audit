@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
@@ -64,6 +65,7 @@ type HTTPConfig struct {
 	IdleTimeout         time.Duration
 	AllowedOrigins      []string
 	AllowedHosts        []string
+	Authenticator       auth.Authenticator
 	TLS                 httpclient.TLSConfig
 	Retry               HTTPRetryConfig
 	Audit               *audit.Logger
@@ -122,6 +124,20 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	}
 	if config.Retry.MaxRetries < 0 {
 		config.Retry.MaxRetries = 0
+	}
+	if config.Authenticator == nil {
+		localClientID := config.ClientID
+		if localClientID == "" {
+			localClientID = "legacy-local"
+		}
+		config.Authenticator, err = auth.NewNoneAuthenticator(auth.Principal{
+			Subject:  localClientID,
+			ClientID: localClientID,
+			Issuer:   "static",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: default authenticator: %w", err)
+		}
 	}
 	if config.Retry.InitialIntervalMS <= 0 {
 		config.Retry.InitialIntervalMS = defaultHTTPRetryInitialIntervalMS
@@ -209,6 +225,17 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.rejectHTTPRequest(w, http.StatusForbidden, "origin", "origin is not allowed")
 		return
 	}
+	principal, err := p.config.Authenticator.Authenticate(r.Context(), r)
+	if err != nil {
+		p.rejectAuthentication(w)
+		return
+	}
+	if principal == nil {
+		http.Error(w, "authentication failed", http.StatusInternalServerError)
+		p.log.Error("authenticator returned a nil principal")
+		return
+	}
+	r = r.WithContext(auth.WithPrincipal(r.Context(), principal))
 	startedAt := time.Now()
 	r.Body = http.MaxBytesReader(w, r.Body, p.config.MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
@@ -256,6 +283,11 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
 	p.observeHTTPResponse(respBody, pending)
+}
+
+func (p *HTTPProxy) rejectAuthentication(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="mcp-audit"`)
+	p.rejectHTTPRequest(w, http.StatusUnauthorized, "authentication", "authentication required")
 }
 
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {

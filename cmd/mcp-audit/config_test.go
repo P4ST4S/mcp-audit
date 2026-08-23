@@ -422,6 +422,78 @@ func TestValidateConfigAllowsAuthorizationForwardHeader(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsStaticBearerAuthFromEnvironment(t *testing.T) {
+	t.Setenv("MCP_AUDIT_STATIC_BEARER_TOKEN", "0123456789abcdef0123456789abcdef")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  transport: http
+  upstream: http://upstream.local
+auth:
+  mode: static_bearer
+  static:
+    subject: alice
+    client_id: client-1
+    issuer: internal
+    roles: [operator]
+    scopes: [tools:read]
+dashboard:
+  enabled: false
+metrics:
+  path: /metrics
+`)
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Auth.Static.BearerToken != "0123456789abcdef0123456789abcdef" || config.Auth.Static.Subject != "alice" {
+		t.Fatalf("static auth config = %#v", config.Auth.Static)
+	}
+	authenticator, err := newAuthenticator(config)
+	if err != nil || authenticator == nil {
+		t.Fatalf("new authenticator = %T, err = %v", authenticator, err)
+	}
+}
+
+func TestValidateConfigRejectsInvalidAuth(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "unknown mode", configure: func(config *appConfig) { config.Auth.Mode = "magic" }},
+		{name: "missing subject", configure: func(config *appConfig) { config.Auth.Static.Subject = "" }},
+		{name: "token in none mode", configure: func(config *appConfig) { config.Auth.Static.BearerToken = "0123456789abcdef0123456789abcdef" }},
+		{name: "short static token", configure: func(config *appConfig) {
+			config.Proxy.Transport = "http"
+			config.Proxy.Upstream = "http://upstream.local"
+			config.Proxy.UpstreamTimeoutMS = proxy.DefaultHTTPUpstreamTimeoutMS
+			config.Proxy.HTTP.MaxRequestBodyBytes = proxy.DefaultHTTPMaxRequestBodyBytes
+			config.Proxy.HTTP.MaxHeaderBytes = proxy.DefaultHTTPMaxHeaderBytes
+			config.Proxy.HTTP.ReadHeaderTimeout = proxy.DefaultHTTPReadHeaderTimeout
+			config.Proxy.HTTP.ReadTimeout = proxy.DefaultHTTPReadTimeout
+			config.Proxy.HTTP.WriteTimeout = proxy.DefaultHTTPWriteTimeout
+			config.Proxy.HTTP.IdleTimeout = proxy.DefaultHTTPIdleTimeout
+			config.Auth.Mode = "static_bearer"
+			config.Auth.Static.BearerToken = "short"
+		}},
+		{name: "static bearer on stdio", configure: func(config *appConfig) {
+			config.Auth.Mode = "static_bearer"
+			config.Auth.Static.BearerToken = "0123456789abcdef0123456789abcdef"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected authentication config error")
+			}
+		})
+	}
+}
+
 func TestValidateConfigRejectsInvalidDashboardConfig(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -523,6 +595,9 @@ func minimalValidConfig() appConfig {
 	config := appConfig{}
 	config.Proxy.Transport = "stdio"
 	config.Proxy.Upstream = "cat"
+	config.Proxy.ClientID = "test-client"
+	config.Auth.Mode = "none"
+	config.Auth.Static.Subject = "local"
 	config.Audit.Storage = "jsonl"
 	config.Metrics.Path = "/metrics"
 	config.Dashboard.Enabled = true
