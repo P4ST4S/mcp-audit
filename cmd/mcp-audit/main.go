@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -76,6 +77,18 @@ type appConfig struct {
 			Roles       []string `mapstructure:"roles"`
 			Scopes      []string `mapstructure:"scopes"`
 		} `mapstructure:"static"`
+		OIDC struct {
+			Issuer          string        `mapstructure:"issuer"`
+			Audience        string        `mapstructure:"audience"`
+			JWKSURI         string        `mapstructure:"jwks_uri"`
+			ClientIDClaim   string        `mapstructure:"client_id_claim"`
+			RolesClaim      string        `mapstructure:"roles_claim"`
+			ScopesClaim     string        `mapstructure:"scopes_claim"`
+			AllowedMethods  []string      `mapstructure:"allowed_methods"`
+			ClockSkew       time.Duration `mapstructure:"clock_skew"`
+			HTTPTimeout     time.Duration `mapstructure:"http_timeout"`
+			RefreshInterval time.Duration `mapstructure:"refresh_interval"`
+		} `mapstructure:"oidc"`
 	} `mapstructure:"auth"`
 	Audit struct {
 		Storage    string `mapstructure:"storage"`
@@ -241,6 +254,13 @@ func main() {
 	if err != nil {
 		logger.Error("failed to initialize client authentication", "error", err)
 		os.Exit(1)
+	}
+	if closer, ok := authenticator.(interface{ Close() error }); ok {
+		defer func() {
+			if err := closer.Close(); err != nil {
+				logger.Warn("failed to close client authenticator", "error", err)
+			}
+		}()
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -451,6 +471,16 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.static.issuer", "static")
 	v.SetDefault("auth.static.roles", []string{})
 	v.SetDefault("auth.static.scopes", []string{})
+	v.SetDefault("auth.oidc.issuer", "")
+	v.SetDefault("auth.oidc.audience", "")
+	v.SetDefault("auth.oidc.jwks_uri", "")
+	v.SetDefault("auth.oidc.client_id_claim", "client_id")
+	v.SetDefault("auth.oidc.roles_claim", "roles")
+	v.SetDefault("auth.oidc.scopes_claim", "scope")
+	v.SetDefault("auth.oidc.allowed_methods", []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"})
+	v.SetDefault("auth.oidc.clock_skew", 30*time.Second)
+	v.SetDefault("auth.oidc.http_timeout", 5*time.Second)
+	v.SetDefault("auth.oidc.refresh_interval", 5*time.Minute)
 	v.SetDefault("audit.storage", "jsonl")
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
@@ -612,26 +642,81 @@ func validateConfig(config appConfig) error {
 }
 
 func validateAuthConfig(config appConfig) error {
-	if config.Auth.Static.ClientID == "" {
-		config.Auth.Static.ClientID = config.Proxy.ClientID
-	}
-	if config.Auth.Static.Subject == "" || config.Auth.Static.ClientID == "" {
-		return fmt.Errorf("main: auth.static.subject and client_id are required")
-	}
 	switch config.Auth.Mode {
 	case auth.ModeNone:
+		if err := validateStaticPrincipal(config); err != nil {
+			return err
+		}
 		if config.Auth.Static.BearerToken != "" {
 			return fmt.Errorf("main: auth.static.bearer_token requires auth.mode=static_bearer")
 		}
 	case auth.ModeStaticBearer:
+		if err := validateStaticPrincipal(config); err != nil {
+			return err
+		}
 		if config.Proxy.Transport != "http" {
 			return fmt.Errorf("main: auth.mode=static_bearer requires proxy.transport=http")
 		}
 		if len(config.Auth.Static.BearerToken) < 32 {
 			return fmt.Errorf("main: auth.static.bearer_token must be at least 32 bytes")
 		}
+	case auth.ModeOIDC:
+		if config.Proxy.Transport != "http" {
+			return fmt.Errorf("main: auth.mode=oidc requires proxy.transport=http")
+		}
+		if err := validateOIDCConfig(config); err != nil {
+			return err
+		}
 	default:
-		return fmt.Errorf("main: auth.mode must be none or static_bearer")
+		return fmt.Errorf("main: auth.mode must be none, static_bearer, or oidc")
+	}
+	return nil
+}
+
+func validateStaticPrincipal(config appConfig) error {
+	clientID := config.Auth.Static.ClientID
+	if clientID == "" {
+		clientID = config.Proxy.ClientID
+	}
+	if config.Auth.Static.Subject == "" || clientID == "" {
+		return fmt.Errorf("main: auth.static.subject and client_id are required")
+	}
+	return nil
+}
+
+func validateOIDCConfig(config appConfig) error {
+	oidc := config.Auth.OIDC
+	if oidc.Issuer == "" || oidc.Audience == "" || oidc.JWKSURI == "" {
+		return fmt.Errorf("main: auth.oidc.issuer, audience, and jwks_uri are required")
+	}
+	issuer, err := url.Parse(oidc.Issuer)
+	if err != nil || issuer.Hostname() == "" || (issuer.Scheme != "https" && issuer.Scheme != "http") || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return fmt.Errorf("main: auth.oidc.issuer must be an absolute HTTP(S) URL without userinfo, query, or fragment")
+	}
+	if issuer.Scheme == "http" && issuer.Hostname() != "localhost" && issuer.Hostname() != "127.0.0.1" && issuer.Hostname() != "::1" {
+		return fmt.Errorf("main: auth.oidc.issuer must use HTTPS except on loopback")
+	}
+	parsed, err := url.Parse(oidc.JWKSURI)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.Fragment != "" {
+		return fmt.Errorf("main: auth.oidc.jwks_uri must be an absolute HTTP(S) URL without userinfo or fragment")
+	}
+	if parsed.Scheme == "http" && parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+		return fmt.Errorf("main: auth.oidc.jwks_uri must use HTTPS except on loopback")
+	}
+	if oidc.ClientIDClaim == "" || oidc.RolesClaim == "" || oidc.ScopesClaim == "" {
+		return fmt.Errorf("main: auth.oidc claim names must be non-empty")
+	}
+	if oidc.ClockSkew < 0 || oidc.HTTPTimeout <= 0 || oidc.RefreshInterval <= 0 {
+		return fmt.Errorf("main: auth.oidc clock_skew must be non-negative and timeouts must be positive")
+	}
+	allowed := map[string]struct{}{"RS256": {}, "RS384": {}, "RS512": {}, "ES256": {}, "ES384": {}, "ES512": {}, "EdDSA": {}}
+	if len(oidc.AllowedMethods) == 0 {
+		return fmt.Errorf("main: auth.oidc.allowed_methods must be non-empty")
+	}
+	for _, method := range oidc.AllowedMethods {
+		if _, ok := allowed[method]; !ok {
+			return fmt.Errorf("main: auth.oidc.allowed_methods contains unsupported method %q", method)
+		}
 	}
 	return nil
 }
@@ -653,6 +738,19 @@ func newAuthenticator(config appConfig) (auth.Authenticator, error) {
 		return auth.NewNoneAuthenticator(principal)
 	case auth.ModeStaticBearer:
 		return auth.NewStaticBearerAuthenticator(config.Auth.Static.BearerToken, principal)
+	case auth.ModeOIDC:
+		return auth.NewJWTAuthenticator(context.Background(), auth.JWTAuthenticatorConfig{
+			Issuer:          config.Auth.OIDC.Issuer,
+			Audience:        config.Auth.OIDC.Audience,
+			JWKSURI:         config.Auth.OIDC.JWKSURI,
+			ClientIDClaim:   config.Auth.OIDC.ClientIDClaim,
+			RolesClaim:      config.Auth.OIDC.RolesClaim,
+			ScopesClaim:     config.Auth.OIDC.ScopesClaim,
+			AllowedMethods:  config.Auth.OIDC.AllowedMethods,
+			ClockSkew:       config.Auth.OIDC.ClockSkew,
+			HTTPTimeout:     config.Auth.OIDC.HTTPTimeout,
+			RefreshInterval: config.Auth.OIDC.RefreshInterval,
+		})
 	default:
 		return nil, fmt.Errorf("main: unsupported auth mode %q", config.Auth.Mode)
 	}

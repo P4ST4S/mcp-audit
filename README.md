@@ -157,13 +157,23 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.retry.max_interval_ms` | `2000` | Maximum upstream retry backoff. |
 | `proxy.client_id` | `claude-desktop` | Client identifier written to audit entries. |
 | `proxy.server_id` | `filesystem` | Server identifier written to audit entries. |
-| `auth.mode` | `none` | HTTP client authentication mode: `none` or `static_bearer`. None uses the explicitly configured static principal for local compatibility. |
+| `auth.mode` | `none` | HTTP client authentication mode: `none`, `static_bearer`, or `oidc`. None uses the explicitly configured static principal for local compatibility. |
 | `auth.static.bearer_token` | empty | Pre-shared bearer token for `static_bearer` mode. Prefer `MCP_AUDIT_STATIC_BEARER_TOKEN`; minimum 32 bytes. |
 | `auth.static.subject` | `local` | Trusted subject for the local or static-bearer principal. |
 | `auth.static.client_id` | empty | Principal client identifier. Empty inherits `proxy.client_id`. |
 | `auth.static.issuer` | `static` | Principal issuer label. |
 | `auth.static.roles` | empty | Roles attached to the principal for later policy evaluation. |
 | `auth.static.scopes` | empty | Scopes attached to the principal for later policy evaluation. |
+| `auth.oidc.issuer` | empty | Required exact JWT issuer in `oidc` mode. |
+| `auth.oidc.audience` | empty | Required JWT audience in `oidc` mode. |
+| `auth.oidc.jwks_uri` | empty | Remote JWKS URL. HTTPS is required except on loopback. |
+| `auth.oidc.client_id_claim` | `client_id` | Required claim projected to the principal client ID. |
+| `auth.oidc.roles_claim` | `roles` | Optional string or string-array roles claim. |
+| `auth.oidc.scopes_claim` | `scope` | Optional space-separated string or string-array scopes claim. |
+| `auth.oidc.allowed_methods` | asymmetric methods | Explicit JWT signature algorithm allowlist. |
+| `auth.oidc.clock_skew` | `30s` | Maximum clock skew for `exp` and `nbf` validation. |
+| `auth.oidc.http_timeout` | `5s` | JWKS HTTP fetch and unknown-key refresh timeout. |
+| `auth.oidc.refresh_interval` | `5m` | Background JWKS rotation refresh interval. |
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |
 | `audit.path` | `./audit.jsonl` | JSONL audit log path. |
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
