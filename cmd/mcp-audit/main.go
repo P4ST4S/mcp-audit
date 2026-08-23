@@ -36,10 +36,21 @@ type appConfig struct {
 	Proxy struct {
 		Transport         string   `mapstructure:"transport"`
 		Upstream          string   `mapstructure:"upstream"`
+		BindAddress       string   `mapstructure:"bind_address"`
 		Port              int      `mapstructure:"port"`
 		UpstreamTimeoutMS int      `mapstructure:"upstream_timeout_ms"`
 		ForwardHeaders    []string `mapstructure:"forward_headers"`
-		TLS               struct {
+		HTTP              struct {
+			MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes"`
+			MaxHeaderBytes      int           `mapstructure:"max_header_bytes"`
+			ReadHeaderTimeout   time.Duration `mapstructure:"read_header_timeout"`
+			ReadTimeout         time.Duration `mapstructure:"read_timeout"`
+			WriteTimeout        time.Duration `mapstructure:"write_timeout"`
+			IdleTimeout         time.Duration `mapstructure:"idle_timeout"`
+			AllowedOrigins      []string      `mapstructure:"allowed_origins"`
+			AllowedHosts        []string      `mapstructure:"allowed_hosts"`
+		} `mapstructure:"http"`
+		TLS struct {
 			CAFile             string `mapstructure:"ca_file"`
 			ServerName         string `mapstructure:"server_name"`
 			InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
@@ -153,6 +164,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger = newLogger(configuredLogLevel(flags))
+	if config.Proxy.Transport == "http" && strings.TrimSpace(config.Proxy.BindAddress) == "" {
+		logger.Warn("proxy.bind_address is not configured; legacy all-interface binding is active")
+	}
 
 	metricsRecorder, metricsServer, err := newMetrics(config, logger)
 	if err != nil {
@@ -245,10 +259,19 @@ func main() {
 		err = stdio.Run(ctx)
 	case "http":
 		httpProxy, err := proxy.NewHTTPProxy(proxy.HTTPConfig{
-			Upstream:          config.Proxy.Upstream,
-			Port:              config.Proxy.Port,
-			UpstreamTimeoutMS: config.Proxy.UpstreamTimeoutMS,
-			ForwardHeaders:    config.Proxy.ForwardHeaders,
+			Upstream:            config.Proxy.Upstream,
+			BindAddress:         config.Proxy.BindAddress,
+			Port:                config.Proxy.Port,
+			UpstreamTimeoutMS:   config.Proxy.UpstreamTimeoutMS,
+			ForwardHeaders:      config.Proxy.ForwardHeaders,
+			MaxRequestBodyBytes: config.Proxy.HTTP.MaxRequestBodyBytes,
+			MaxHeaderBytes:      config.Proxy.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout:   config.Proxy.HTTP.ReadHeaderTimeout,
+			ReadTimeout:         config.Proxy.HTTP.ReadTimeout,
+			WriteTimeout:        config.Proxy.HTTP.WriteTimeout,
+			IdleTimeout:         config.Proxy.HTTP.IdleTimeout,
+			AllowedOrigins:      config.Proxy.HTTP.AllowedOrigins,
+			AllowedHosts:        config.Proxy.HTTP.AllowedHosts,
 			TLS: httpclient.TLSConfig{
 				CAFile:             config.Proxy.TLS.CAFile,
 				ServerName:         config.Proxy.TLS.ServerName,
@@ -273,7 +296,7 @@ func main() {
 			logger.Error("failed to create http proxy", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("http proxy listening", "port", config.Proxy.Port, "upstream", config.Proxy.Upstream)
+		logger.Info("http proxy listening", "bind_address", config.Proxy.BindAddress, "port", config.Proxy.Port, "upstream", config.Proxy.Upstream)
 		err = httpProxy.ListenAndServe(ctx)
 	default:
 		err = fmt.Errorf("main: unknown transport %q", config.Proxy.Transport)
@@ -378,9 +401,18 @@ func dashboardConfigFromApp(config appConfig, store audit.Store, logger *slog.Lo
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
+	v.SetDefault("proxy.bind_address", "")
 	v.SetDefault("proxy.port", 4422)
 	v.SetDefault("proxy.upstream_timeout_ms", proxy.DefaultHTTPUpstreamTimeoutMS)
 	v.SetDefault("proxy.forward_headers", []string{})
+	v.SetDefault("proxy.http.max_request_body_bytes", proxy.DefaultHTTPMaxRequestBodyBytes)
+	v.SetDefault("proxy.http.max_header_bytes", proxy.DefaultHTTPMaxHeaderBytes)
+	v.SetDefault("proxy.http.read_header_timeout", proxy.DefaultHTTPReadHeaderTimeout)
+	v.SetDefault("proxy.http.read_timeout", proxy.DefaultHTTPReadTimeout)
+	v.SetDefault("proxy.http.write_timeout", proxy.DefaultHTTPWriteTimeout)
+	v.SetDefault("proxy.http.idle_timeout", proxy.DefaultHTTPIdleTimeout)
+	v.SetDefault("proxy.http.allowed_origins", []string{})
+	v.SetDefault("proxy.http.allowed_hosts", []string{})
 	v.SetDefault("proxy.tls.ca_file", "")
 	v.SetDefault("proxy.tls.server_name", "")
 	v.SetDefault("proxy.tls.insecure_skip_verify", false)
@@ -471,6 +503,24 @@ func validateConfig(config appConfig) error {
 	}
 	if config.Proxy.Transport == "http" && config.Proxy.UpstreamTimeoutMS <= 0 {
 		return fmt.Errorf("main: proxy.upstream_timeout_ms must be > 0")
+	}
+	if config.Proxy.Transport == "http" {
+		if strings.TrimSpace(config.Proxy.BindAddress) != config.Proxy.BindAddress || strings.ContainsFunc(config.Proxy.BindAddress, unicode.IsSpace) {
+			return fmt.Errorf("main: proxy.bind_address must not contain whitespace")
+		}
+		if config.Proxy.HTTP.MaxRequestBodyBytes <= 0 {
+			return fmt.Errorf("main: proxy.http.max_request_body_bytes must be > 0")
+		}
+		if config.Proxy.HTTP.MaxHeaderBytes <= 0 {
+			return fmt.Errorf("main: proxy.http.max_header_bytes must be > 0")
+		}
+		if config.Proxy.HTTP.ReadHeaderTimeout <= 0 || config.Proxy.HTTP.ReadTimeout <= 0 ||
+			config.Proxy.HTTP.WriteTimeout <= 0 || config.Proxy.HTTP.IdleTimeout <= 0 {
+			return fmt.Errorf("main: proxy.http timeouts must be > 0")
+		}
+		if err := proxy.ValidateHTTPAccessLists(config.Proxy.HTTP.AllowedOrigins, config.Proxy.HTTP.AllowedHosts); err != nil {
+			return fmt.Errorf("main: %w", err)
+		}
 	}
 	if config.Proxy.Retry.MaxRetries < 0 {
 		return fmt.Errorf("main: proxy.retry.max_retries must be >= 0")

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,123 @@ func TestHTTPProxyAuthorizationForwardingMigrationScenario(t *testing.T) {
 
 	if forwardingRec.Code != http.StatusOK {
 		t.Fatalf("forwarding status = %d, want 200", forwardingRec.Code)
+	}
+}
+
+func TestHTTPProxyRejectsOversizedRequestBody(t *testing.T) {
+	metrics := &httpRejectionMetrics{}
+	upstreamCalls := 0
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:            "http://upstream.local",
+		MaxRequestBodyBytes: 4,
+		Metrics:             metrics,
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader("12345"))
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", rec.Code)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	}
+	if len(metrics.rejections) != 1 || metrics.rejections[0] != "body_too_large" {
+		t.Fatalf("rejection metrics = %#v", metrics.rejections)
+	}
+}
+
+func TestHTTPProxyAcceptsRequestAtBodyLimit(t *testing.T) {
+	proxy, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local", MaxRequestBodyBytes: 4})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return okJSONResponse(), nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader("1234"))
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestHTTPProxyValidatesBrowserOrigin(t *testing.T) {
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:       "http://upstream.local",
+		AllowedOrigins: []string{"https://internal.example.com"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return okJSONResponse(), nil
+	})
+
+	cases := []struct {
+		name   string
+		origin string
+		status int
+	}{
+		{name: "non-browser client", status: http.StatusOK},
+		{name: "allowed origin", origin: "https://internal.example.com", status: http.StatusOK},
+		{name: "allowed default port", origin: "https://internal.example.com:443", status: http.StatusOK},
+		{name: "rejected origin", origin: "https://evil.example.com", status: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader("{}"))
+			if tc.origin != "" {
+				req.Header.Set("Origin", tc.origin)
+			}
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, req)
+			if rec.Code != tc.status {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
+			}
+		})
+	}
+}
+
+func TestHTTPProxyValidatesHost(t *testing.T) {
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:     "http://upstream.local",
+		AllowedHosts: []string{"localhost", "127.0.0.1"},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return okJSONResponse(), nil
+	})
+
+	cases := []struct {
+		host   string
+		status int
+	}{
+		{host: "localhost:4422", status: http.StatusOK},
+		{host: "127.0.0.1:4422", status: http.StatusOK},
+		{host: "attacker.example:4422", status: http.StatusForbidden},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader("{}"))
+		req.Host = tc.host
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("host %q status = %d, want %d", tc.host, rec.Code, tc.status)
+		}
 	}
 }
 
@@ -495,4 +613,52 @@ func TestNewHTTPProxyDefaultsUpstreamTimeout(t *testing.T) {
 	if proxy.client.Timeout != time.Duration(DefaultHTTPUpstreamTimeoutMS)*time.Millisecond {
 		t.Fatalf("client timeout = %s, want %dms", proxy.client.Timeout, DefaultHTTPUpstreamTimeoutMS)
 	}
+}
+
+func TestHTTPServerUsesConfiguredBindAndHardeningDefaults(t *testing.T) {
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:    "http://upstream.local",
+		BindAddress: "127.0.0.1",
+		Port:        4422,
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	server := proxy.httpServer()
+	if server.Addr != "127.0.0.1:4422" {
+		t.Fatalf("server address = %q, want 127.0.0.1:4422", server.Addr)
+	}
+	if server.MaxHeaderBytes != DefaultHTTPMaxHeaderBytes {
+		t.Fatalf("max header bytes = %d", server.MaxHeaderBytes)
+	}
+	if server.ReadHeaderTimeout != DefaultHTTPReadHeaderTimeout ||
+		server.ReadTimeout != DefaultHTTPReadTimeout ||
+		server.WriteTimeout != DefaultHTTPWriteTimeout ||
+		server.IdleTimeout != DefaultHTTPIdleTimeout {
+		t.Fatalf("unexpected server timeouts: %#v", server)
+	}
+}
+
+func TestNewHTTPProxyRejectsInvalidAccessLists(t *testing.T) {
+	cases := []HTTPConfig{
+		{Upstream: "http://upstream.local", AllowedOrigins: []string{"file:///tmp"}},
+		{Upstream: "http://upstream.local", AllowedOrigins: []string{"https://example.com/path"}},
+		{Upstream: "http://upstream.local", AllowedHosts: []string{"https://example.com"}},
+	}
+	for _, config := range cases {
+		if _, err := NewHTTPProxy(config); err == nil {
+			t.Fatalf("expected invalid access list error for %#v", config)
+		}
+	}
+}
+
+type httpRejectionMetrics struct {
+	rejections []string
+}
+
+func (*httpRejectionMetrics) RecordPolicyDecision(string)             {}
+func (*httpRejectionMetrics) RecordRateLimitRejection(string, string) {}
+func (*httpRejectionMetrics) RecordHTTPUpstreamRetry(string)          {}
+func (m *httpRejectionMetrics) RecordHTTPRequestRejection(reason string) {
+	m.rejections = append(m.rejections, reason)
 }

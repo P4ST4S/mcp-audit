@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -27,6 +28,15 @@ import (
 const DefaultHTTPUpstreamTimeoutMS = 30000
 
 const (
+	DefaultHTTPMaxRequestBodyBytes = int64(10 * 1024 * 1024)
+	DefaultHTTPMaxHeaderBytes      = 1024 * 1024
+	DefaultHTTPReadHeaderTimeout   = 10 * time.Second
+	DefaultHTTPReadTimeout         = 30 * time.Second
+	DefaultHTTPWriteTimeout        = 30 * time.Second
+	DefaultHTTPIdleTimeout         = 120 * time.Second
+)
+
+const (
 	defaultHTTPRetryInitialIntervalMS = 200
 	defaultHTTPRetryMaxIntervalMS     = 2000
 )
@@ -40,20 +50,29 @@ type HTTPRetryConfig struct {
 
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
-	Upstream string
-	Port     int
+	Upstream    string
+	BindAddress string
+	Port        int
 	// UpstreamTimeoutMS bounds each HTTP request to the upstream MCP server.
-	UpstreamTimeoutMS int
-	ForwardHeaders    []string
-	TLS               httpclient.TLSConfig
-	Retry             HTTPRetryConfig
-	Audit             *audit.Logger
-	Limiter           *middleware.RateLimiter
-	Policy            *policy.Engine
-	Log               *slog.Logger
-	ClientID          string
-	ServerID          string
-	Metrics           proxyMetrics
+	UpstreamTimeoutMS   int
+	ForwardHeaders      []string
+	MaxRequestBodyBytes int64
+	MaxHeaderBytes      int
+	ReadHeaderTimeout   time.Duration
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	IdleTimeout         time.Duration
+	AllowedOrigins      []string
+	AllowedHosts        []string
+	TLS                 httpclient.TLSConfig
+	Retry               HTTPRetryConfig
+	Audit               *audit.Logger
+	Limiter             *middleware.RateLimiter
+	Policy              *policy.Engine
+	Log                 *slog.Logger
+	ClientID            string
+	ServerID            string
+	Metrics             proxyMetrics
 }
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
@@ -63,6 +82,8 @@ type HTTPProxy struct {
 	client         *http.Client
 	log            *slog.Logger
 	forwardHeaders map[string]struct{}
+	allowedOrigins map[string]struct{}
+	allowedHosts   map[string]struct{}
 }
 
 // NewHTTPProxy creates an HTTP proxy.
@@ -80,6 +101,24 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	}
 	if config.UpstreamTimeoutMS <= 0 {
 		config.UpstreamTimeoutMS = DefaultHTTPUpstreamTimeoutMS
+	}
+	if config.MaxRequestBodyBytes <= 0 {
+		config.MaxRequestBodyBytes = DefaultHTTPMaxRequestBodyBytes
+	}
+	if config.MaxHeaderBytes <= 0 {
+		config.MaxHeaderBytes = DefaultHTTPMaxHeaderBytes
+	}
+	if config.ReadHeaderTimeout <= 0 {
+		config.ReadHeaderTimeout = DefaultHTTPReadHeaderTimeout
+	}
+	if config.ReadTimeout <= 0 {
+		config.ReadTimeout = DefaultHTTPReadTimeout
+	}
+	if config.WriteTimeout <= 0 {
+		config.WriteTimeout = DefaultHTTPWriteTimeout
+	}
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = DefaultHTTPIdleTimeout
 	}
 	if config.Retry.MaxRetries < 0 {
 		config.Retry.MaxRetries = 0
@@ -100,22 +139,29 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proxy: http: upstream client: %w", err)
 	}
+	allowedOrigins, err := normalizedAllowedOrigins(config.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	allowedHosts, err := normalizedAllowedHosts(config.AllowedHosts)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPProxy{
 		config:         config,
 		upstream:       upstream,
 		client:         client,
 		log:            logger,
 		forwardHeaders: normalizedForwardHeaders(config.ForwardHeaders),
+		allowedOrigins: allowedOrigins,
+		allowedHosts:   allowedHosts,
 	}, nil
 }
 
 // ListenAndServe starts the HTTP proxy server.
 func (p *HTTPProxy) ListenAndServe(ctx context.Context) error {
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", p.config.Port),
-		Handler:           p,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	server := p.httpServer()
+
 	errs := make(chan error, 1)
 	go func() {
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -141,11 +187,37 @@ func (p *HTTPProxy) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+func (p *HTTPProxy) httpServer() *http.Server {
+	return &http.Server{
+		Addr:              net.JoinHostPort(p.config.BindAddress, strconv.Itoa(p.config.Port)),
+		Handler:           p,
+		MaxHeaderBytes:    p.config.MaxHeaderBytes,
+		ReadHeaderTimeout: p.config.ReadHeaderTimeout,
+		ReadTimeout:       p.config.ReadTimeout,
+		WriteTimeout:      p.config.WriteTimeout,
+		IdleTimeout:       p.config.IdleTimeout,
+	}
+}
+
 // ServeHTTP forwards a request to the upstream server and audits JSON-RPC messages.
 func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.hostAllowed(r.Host) {
+		p.rejectHTTPRequest(w, http.StatusForbidden, "host", "host is not allowed")
+		return
+	}
+	if !p.originAllowed(r.Header.Get("Origin")) {
+		p.rejectHTTPRequest(w, http.StatusForbidden, "origin", "origin is not allowed")
+		return
+	}
 	startedAt := time.Now()
+	r.Body = http.MaxBytesReader(w, r.Body, p.config.MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			p.rejectHTTPRequest(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body is too large")
+			return
+		}
 		http.Error(w, "failed to read request", http.StatusBadRequest)
 		p.log.Error("failed to read request body", "error", err)
 		return
@@ -497,6 +569,123 @@ func normalizedForwardHeaders(headers []string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func normalizedAllowedOrigins(origins []string) (map[string]struct{}, error) {
+	normalized := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		value, err := normalizeOrigin(origin)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: allowed origin %q: %w", origin, err)
+		}
+		normalized[value] = struct{}{}
+	}
+	return normalized, nil
+}
+
+// ValidateHTTPAccessLists validates configured browser origins and Host values.
+func ValidateHTTPAccessLists(origins, hosts []string) error {
+	if _, err := normalizedAllowedOrigins(origins); err != nil {
+		return err
+	}
+	if _, err := normalizedAllowedHosts(hosts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeOrigin(origin string) (string, error) {
+	if origin == "" || strings.TrimSpace(origin) != origin {
+		return "", fmt.Errorf("must be a non-empty origin")
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return "", fmt.Errorf("parse: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("scheme must be http or https")
+	}
+	if parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("must contain only scheme and authority")
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "" {
+		return "", fmt.Errorf("hostname is required")
+	}
+	port := parsed.Port()
+	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	authority := hostname
+	if strings.Contains(hostname, ":") {
+		authority = "[" + hostname + "]"
+	}
+	if port != "" {
+		authority = net.JoinHostPort(hostname, port)
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + authority, nil
+}
+
+func normalizedAllowedHosts(hosts []string) (map[string]struct{}, error) {
+	normalized := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		value, err := normalizeHostname(host)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: allowed host %q: %w", host, err)
+		}
+		normalized[value] = struct{}{}
+	}
+	return normalized, nil
+}
+
+func normalizeHostname(host string) (string, error) {
+	if host == "" || strings.TrimSpace(host) != host || strings.ContainsAny(host, "/?#@") {
+		return "", fmt.Errorf("must be a non-empty hostname with optional port")
+	}
+	hostname := host
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		hostname = parsedHost
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		hostname = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	} else if strings.Count(host, ":") == 1 {
+		return "", fmt.Errorf("invalid host and port")
+	}
+	hostname = strings.ToLower(strings.TrimSuffix(strings.Trim(hostname, "[]"), "."))
+	if hostname == "" || strings.ContainsFunc(hostname, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return "", fmt.Errorf("invalid hostname")
+	}
+	return hostname, nil
+}
+
+func (p *HTTPProxy) originAllowed(origin string) bool {
+	if origin == "" || len(p.allowedOrigins) == 0 {
+		return true
+	}
+	normalized, err := normalizeOrigin(origin)
+	if err != nil {
+		return false
+	}
+	_, ok := p.allowedOrigins[normalized]
+	return ok
+}
+
+func (p *HTTPProxy) hostAllowed(host string) bool {
+	if len(p.allowedHosts) == 0 {
+		return true
+	}
+	normalized, err := normalizeHostname(host)
+	if err != nil {
+		return false
+	}
+	_, ok := p.allowedHosts[normalized]
+	return ok
+}
+
+func (p *HTTPProxy) rejectHTTPRequest(w http.ResponseWriter, status int, reason, message string) {
+	if recorder, ok := p.config.Metrics.(interface{ RecordHTTPRequestRejection(string) }); ok {
+		recorder.RecordHTTPRequestRejection(reason)
+	}
+	http.Error(w, message, status)
 }
 
 func joinURLPath(basePath, requestPath string) string {
