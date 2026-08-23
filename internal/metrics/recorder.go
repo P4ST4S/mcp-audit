@@ -31,6 +31,7 @@ type Recorder interface {
 	RecordPolicyDecision(action string)
 	RecordRateLimitRejection(clientID, toolName string)
 	RecordHTTPUpstreamRetry(reason string)
+	RecordHTTPRequestRejection(reason string)
 	RecordStorageWrite(backend, mode, status string, duration time.Duration, entries int)
 	RecordOTelExport(status string, duration time.Duration, spans int)
 	RecordOTelDrop(reason string, spans int)
@@ -53,6 +54,7 @@ func (noopRecorder) RecordAuditEntry(audit.Entry)                               
 func (noopRecorder) RecordPolicyDecision(string)                                   {}
 func (noopRecorder) RecordRateLimitRejection(string, string)                       {}
 func (noopRecorder) RecordHTTPUpstreamRetry(string)                                {}
+func (noopRecorder) RecordHTTPRequestRejection(string)                             {}
 func (noopRecorder) RecordStorageWrite(string, string, string, time.Duration, int) {}
 func (noopRecorder) RecordOTelExport(string, time.Duration, int)                   {}
 func (noopRecorder) RecordOTelDrop(string, int)                                    {}
@@ -74,6 +76,7 @@ type PrometheusRecorder struct {
 	toolCalls         *prometheus.CounterVec
 	rateLimitRejects  *prometheus.CounterVec
 	upstreamRetries   *prometheus.CounterVec
+	httpRejects       *prometheus.CounterVec
 	storageWrites     *prometheus.CounterVec
 	storageWriteTime  *prometheus.HistogramVec
 	otelExports       *prometheus.CounterVec
@@ -126,6 +129,10 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 			Name: "mcp_audit_http_upstream_retries_total",
 			Help: "Total HTTP upstream retry attempts.",
 		}, []string{"reason"}),
+		httpRejects: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "mcp_audit_http_request_rejections_total",
+			Help: "Total HTTP requests rejected before upstream forwarding.",
+		}, []string{"reason"}),
 		storageWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "mcp_audit_storage_writes_total",
 			Help: "Total audit storage writes.",
@@ -176,6 +183,7 @@ func NewPrometheusRecorder(config Config) (*PrometheusRecorder, error) {
 		recorder.auditEntries,
 		recorder.policyDecisions,
 		recorder.upstreamRetries,
+		recorder.httpRejects,
 		recorder.storageWrites,
 		recorder.storageWriteTime,
 		recorder.otelExports,
@@ -296,6 +304,13 @@ func (r *PrometheusRecorder) RecordHTTPUpstreamRetry(reason string) {
 		reason = "unknown"
 	}
 	r.upstreamRetries.WithLabelValues(reason).Inc()
+}
+
+func (r *PrometheusRecorder) RecordHTTPRequestRejection(reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	r.httpRejects.WithLabelValues(reason).Inc()
 }
 
 func (r *PrometheusRecorder) RecordStorageWrite(backend, mode, status string, duration time.Duration, entries int) {

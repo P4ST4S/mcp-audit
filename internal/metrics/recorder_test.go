@@ -27,6 +27,7 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 	recorder.RecordRateLimitRejection("client", "read_file")
 	recorder.RecordPolicyDecision("deny")
 	recorder.RecordHTTPUpstreamRetry("503")
+	recorder.RecordHTTPRequestRejection("body_too_large")
 	recorder.RecordStorageWrite("jsonl", "async", "ok", 10*time.Millisecond, 3)
 	recorder.RecordOTelExport("ok", 20*time.Millisecond, 2)
 	recorder.RecordOTelDrop("queue_full", 1)
@@ -48,6 +49,7 @@ func TestPrometheusRecorderExposesApplicationMetrics(t *testing.T) {
 		`mcp_audit_tool_calls_total{status="ok",tool_name="read_file",transport="stdio"} 1`,
 		`mcp_audit_rate_limit_rejections_total{client_id="client",tool_name="read_file"} 1`,
 		`mcp_audit_http_upstream_retries_total{reason="503"} 1`,
+		`mcp_audit_http_request_rejections_total{reason="body_too_large"} 1`,
 		`mcp_audit_storage_writes_total{backend="jsonl",mode="async",status="ok"} 3`,
 		`mcp_audit_otel_export_requests_total{status="ok"} 1`,
 		`mcp_audit_otel_spans_total{status="ok"} 2`,
@@ -146,6 +148,7 @@ func TestPrometheusRecorderFallsBackOnEmptyLabels(t *testing.T) {
 	recorder.RecordPolicyDecision("")
 	recorder.RecordRateLimitRejection("", "")
 	recorder.RecordHTTPUpstreamRetry("")
+	recorder.RecordHTTPRequestRejection("")
 	recorder.RecordOTelExport("", 5*time.Millisecond, 1)
 	recorder.RecordOTelDrop("", 1)
 
@@ -158,6 +161,7 @@ func TestPrometheusRecorderFallsBackOnEmptyLabels(t *testing.T) {
 		`mcp_audit_policy_decisions_total{action="unknown"}`,
 		`mcp_audit_rate_limit_rejections_total{client_id="unknown",tool_name="unknown"}`,
 		`mcp_audit_http_upstream_retries_total{reason="unknown"}`,
+		`mcp_audit_http_request_rejections_total{reason="unknown"}`,
 		`mcp_audit_otel_export_requests_total{status="unknown"}`,
 		`mcp_audit_otel_spans_dropped_total{reason="unknown"}`,
 	} {

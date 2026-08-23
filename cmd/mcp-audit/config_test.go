@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
@@ -35,6 +36,47 @@ func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 	}
 	if len(config.Proxy.ForwardHeaders) != 0 {
 		t.Fatalf("forward_headers = %#v, want empty", config.Proxy.ForwardHeaders)
+	}
+}
+
+func TestLoadConfigReadsHTTPHardening(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  transport: http
+  upstream: http://upstream.local
+  bind_address: 127.0.0.1
+  http:
+    max_request_body_bytes: 4096
+    max_header_bytes: 8192
+    read_header_timeout: 2s
+    read_timeout: 3s
+    write_timeout: 4s
+    idle_timeout: 5s
+    allowed_origins:
+      - https://internal.example.com
+    allowed_hosts:
+      - localhost
+`)
+	if err := os.WriteFile(configPath, raw, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Proxy.BindAddress != "127.0.0.1" {
+		t.Fatalf("bind address = %q", config.Proxy.BindAddress)
+	}
+	if config.Proxy.HTTP.MaxRequestBodyBytes != 4096 || config.Proxy.HTTP.MaxHeaderBytes != 8192 {
+		t.Fatalf("HTTP limits = %d/%d", config.Proxy.HTTP.MaxRequestBodyBytes, config.Proxy.HTTP.MaxHeaderBytes)
+	}
+	if config.Proxy.HTTP.ReadHeaderTimeout != 2*time.Second || config.Proxy.HTTP.ReadTimeout != 3*time.Second ||
+		config.Proxy.HTTP.WriteTimeout != 4*time.Second || config.Proxy.HTTP.IdleTimeout != 5*time.Second {
+		t.Fatalf("HTTP timeouts = %#v", config.Proxy.HTTP)
+	}
+	if len(config.Proxy.HTTP.AllowedOrigins) != 1 || len(config.Proxy.HTTP.AllowedHosts) != 1 {
+		t.Fatalf("HTTP access lists = %#v", config.Proxy.HTTP)
 	}
 }
 
@@ -231,6 +273,29 @@ func TestValidateConfigRejectsInvalidUpstreamTimeout(t *testing.T) {
 
 	if err := validateConfig(config); err == nil {
 		t.Fatal("expected invalid upstream timeout error, got nil")
+	}
+}
+
+func TestValidateConfigRejectsInvalidHTTPHardening(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "body limit", configure: func(config *appConfig) { config.Proxy.HTTP.MaxRequestBodyBytes = 0 }},
+		{name: "header limit", configure: func(config *appConfig) { config.Proxy.HTTP.MaxHeaderBytes = 0 }},
+		{name: "read header timeout", configure: func(config *appConfig) { config.Proxy.HTTP.ReadHeaderTimeout = 0 }},
+		{name: "bind whitespace", configure: func(config *appConfig) { config.Proxy.BindAddress = "127.0.0.1 " }},
+		{name: "origin", configure: func(config *appConfig) { config.Proxy.HTTP.AllowedOrigins = []string{"file:///tmp"} }},
+		{name: "host", configure: func(config *appConfig) { config.Proxy.HTTP.AllowedHosts = []string{"https://example.com"} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidHTTPConfig()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected invalid HTTP hardening config")
+			}
+		})
 	}
 }
 
@@ -463,6 +528,20 @@ func minimalValidConfig() appConfig {
 	config.Dashboard.Enabled = true
 	config.Dashboard.BindAddress = dashboard.DefaultBindAddress
 	config.Dashboard.Port = 9090
+	return config
+}
+
+func minimalValidHTTPConfig() appConfig {
+	config := minimalValidConfig()
+	config.Proxy.Transport = "http"
+	config.Proxy.Upstream = "http://upstream.local"
+	config.Proxy.UpstreamTimeoutMS = proxy.DefaultHTTPUpstreamTimeoutMS
+	config.Proxy.HTTP.MaxRequestBodyBytes = proxy.DefaultHTTPMaxRequestBodyBytes
+	config.Proxy.HTTP.MaxHeaderBytes = proxy.DefaultHTTPMaxHeaderBytes
+	config.Proxy.HTTP.ReadHeaderTimeout = proxy.DefaultHTTPReadHeaderTimeout
+	config.Proxy.HTTP.ReadTimeout = proxy.DefaultHTTPReadTimeout
+	config.Proxy.HTTP.WriteTimeout = proxy.DefaultHTTPWriteTimeout
+	config.Proxy.HTTP.IdleTimeout = proxy.DefaultHTTPIdleTimeout
 	return config
 }
 

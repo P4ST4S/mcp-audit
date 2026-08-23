@@ -135,8 +135,17 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | --- | --- | --- |
 | `proxy.transport` | `stdio` | Proxy transport: `stdio` or `http`. |
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
+| `proxy.bind_address` | empty (legacy) | HTTP listen address. The distributed config uses `127.0.0.1`; an omitted value retains all-interface binding with a warning until v2.0.0. |
 | `proxy.port` | `4422` | HTTP listen port. |
 | `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
+| `proxy.http.max_request_body_bytes` | `10485760` | Maximum incoming HTTP request body size. Oversized requests return `413`. |
+| `proxy.http.max_header_bytes` | `1048576` | Maximum incoming HTTP header size. |
+| `proxy.http.read_header_timeout` | `10s` | Time allowed to read request headers. |
+| `proxy.http.read_timeout` | `30s` | Time allowed to read the full request. |
+| `proxy.http.write_timeout` | `30s` | Time allowed to write the response. |
+| `proxy.http.idle_timeout` | `120s` | Keep-alive idle timeout. |
+| `proxy.http.allowed_origins` | empty | Optional exact browser Origin allowlist. Requests without `Origin` remain valid non-browser clients. |
+| `proxy.http.allowed_hosts` | empty | Optional Host allowlist for DNS-rebinding protection. Entries are hostnames or IP addresses with optional ports. |
 | `proxy.forward_headers` | empty | Request headers allowed to bypass the default upstream strip list. Use `["Authorization"]` only when the upstream MCP HTTP server requires bearer-token auth. |
 | `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
 | `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
