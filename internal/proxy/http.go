@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -154,6 +155,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	pending, reject := p.observeHTTPRequest(body, startedAt)
 	if reject != nil {
+		p.finalizeHTTPPending(pending, audit.OutcomeCancelled, audit.DirectionClientToServer)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(reject)
@@ -162,6 +164,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.doUpstreamRequest(r, body)
 	if err != nil {
+		p.finalizeHTTPPending(pending, httpFailureOutcome(r.Context(), err), audit.DirectionServerToClient)
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		p.log.Error("upstream request failed", "error", err)
 		return
@@ -171,19 +174,25 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), resp.Header)
 	if isEventStream(resp.Header.Get("Content-Type")) {
 		w.WriteHeader(resp.StatusCode)
-		p.streamSSE(w, resp.Body, pending)
+		p.streamSSE(r.Context(), w, resp.Body, pending, resp.StatusCode)
 		return
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		p.finalizeHTTPPending(pending, httpFailureOutcome(r.Context(), err), audit.DirectionServerToClient)
 		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
 		p.log.Error("failed to read upstream response", "error", err)
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(respBody)
-	p.observeHTTPResponse(respBody, pending)
+	if _, err := w.Write(respBody); err != nil {
+		p.finalizeHTTPPending(pending, audit.OutcomeClientDisconnect, audit.DirectionServerToClient)
+		p.log.Warn("failed to write response to client", "error", err)
+		return
+	}
+	p.observeHTTPResponse(respBody, pending, resp.StatusCode)
+	p.finalizeHTTPRemainder(pending, resp.StatusCode)
 }
 
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
@@ -309,7 +318,7 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 			continue
 		}
 		toolName := toolNameFromParams(msg.Method, msg.Params)
-		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, startedAt)
+		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, len(msg.ID) > 0, startedAt)
 		if msg.Method == "tools/call" {
 			decision := p.evaluatePolicy(toolName)
 			p.recordPolicyDecision(decision)
@@ -335,48 +344,60 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 			pending[string(msg.ID)] = call
 			continue
 		}
-		if err := p.record(call, audit.OutcomeSuccess, audit.DirectionClientToServer, nil, nil); err != nil {
-			p.log.Error("failed to audit http notification", "error", err)
+		if call.operation != nil {
+			pending["notification:"+call.operation.ID()] = call
 		}
 	}
 	return pending, nil
 }
 
-func (p *HTTPProxy) observeHTTPResponse(raw []byte, pending map[string]pendingCall) {
+func (p *HTTPProxy) observeHTTPResponse(raw []byte, pending map[string]pendingCall, statusCode int) bool {
 	if len(pending) == 0 || len(bytes.TrimSpace(raw)) == 0 {
-		return
+		return true
 	}
 	messages, err := decodeMessages(raw)
 	if err != nil {
 		p.log.Warn("failed to inspect http response", "error", err)
-		return
+		return false
 	}
 	for _, msg := range messages {
 		call, ok := pending[string(msg.ID)]
 		if !ok {
 			continue
 		}
-		if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
+		outcome := outcomeForRPCError(msg.Error)
+		if statusCode >= http.StatusBadRequest {
+			outcome = audit.OutcomeUpstreamError
+		}
+		if err := p.record(call, outcome, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
 			p.log.Error("failed to audit http response", "error", err)
 		}
 		delete(pending, string(msg.ID))
 	}
+	return true
 }
 
-func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map[string]pendingCall) {
+func (p *HTTPProxy) streamSSE(ctx context.Context, w http.ResponseWriter, body io.Reader, pending map[string]pendingCall, statusCode int) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReader(body)
 	var data strings.Builder
 	for {
 		lineBytes, err := reader.ReadBytes('\n')
 		if len(lineBytes) > 0 {
-			_, _ = w.Write(lineBytes)
+			if _, writeErr := w.Write(lineBytes); writeErr != nil {
+				p.finalizeHTTPPending(pending, audit.OutcomeClientDisconnect, audit.DirectionServerToClient)
+				p.log.Warn("failed to stream response to client", "error", writeErr)
+				return
+			}
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
 		if len(lineBytes) == 0 && err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			} else {
+				p.finalizeHTTPPending(pending, httpFailureOutcome(ctx, err), audit.DirectionServerToClient)
 				p.log.Error("failed to stream SSE response", "error", err)
 			}
 			return
@@ -386,11 +407,16 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 		if line == "" && data.Len() > 0 {
-			p.observeHTTPResponse([]byte(data.String()), pending)
+			if !p.observeHTTPResponse([]byte(data.String()), pending, statusCode) {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			}
 			data.Reset()
 		}
 		if err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			} else {
+				p.finalizeHTTPPending(pending, httpFailureOutcome(ctx, err), audit.DirectionServerToClient)
 				p.log.Error("failed to stream SSE response", "error", err)
 			}
 			return
@@ -398,7 +424,46 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 	}
 }
 
-func (p *HTTPProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, startedAt time.Time) pendingCall {
+func (p *HTTPProxy) finalizeHTTPRemainder(pending map[string]pendingCall, statusCode int) {
+	for id, call := range pending {
+		outcome := audit.OutcomeMalformedUpstreamResponse
+		direction := audit.DirectionServerToClient
+		if statusCode >= http.StatusBadRequest {
+			outcome = audit.OutcomeUpstreamError
+		} else if !call.expectsResponse {
+			outcome = audit.OutcomeSuccess
+			direction = audit.DirectionClientToServer
+		}
+		if err := p.record(call, outcome, direction, nil, nil); err != nil {
+			p.log.Error("failed to finalize http audit operation", "outcome", outcome, "error", err)
+		}
+		delete(pending, id)
+	}
+}
+
+func (p *HTTPProxy) finalizeHTTPPending(pending map[string]pendingCall, outcome audit.Outcome, direction string) {
+	for id, call := range pending {
+		if err := p.record(call, outcome, direction, nil, nil); err != nil {
+			p.log.Error("failed to finalize incomplete http audit operation", "outcome", outcome, "error", err)
+		}
+		delete(pending, id)
+	}
+}
+
+func httpFailureOutcome(ctx context.Context, err error) audit.Outcome {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return audit.OutcomeTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+			return audit.OutcomeClientDisconnect
+		}
+		return audit.OutcomeCancelled
+	}
+	return audit.OutcomeUpstreamError
+}
+
+func (p *HTTPProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, expectsResponse bool, startedAt time.Time) pendingCall {
 	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
 		Method:    method,
 		RequestID: requestID,
@@ -410,7 +475,7 @@ func (p *HTTPProxy) newPendingCall(method, requestID, toolName string, params js
 	if err != nil {
 		p.log.Error("failed to start audit operation", "method", method, "error", err)
 	}
-	return pendingCall{operation: operation, startedAt: startedAt}
+	return pendingCall{operation: operation, startedAt: startedAt, expectsResponse: expectsResponse}
 }
 
 func (p *HTTPProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {

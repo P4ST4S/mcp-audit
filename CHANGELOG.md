@@ -8,6 +8,9 @@ All notable changes to mcp-audit are documented in this file.
 
 - Terminal audit `outcome` values and UUIDv7 `audit_operation_id` correlation,
   with an exactly-once operation finalizer shared by HTTP and stdio transports.
+- Complete HTTP terminal auditing for upstream connection failures, timeouts,
+  malformed and incomplete responses, SSE failures, cancellations, and client
+  disconnects. HTTP notifications are finalized only after the upstream result.
 - Security invariants and release gates for v1.2.0.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
