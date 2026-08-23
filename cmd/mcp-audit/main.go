@@ -33,6 +33,12 @@ var (
 	date    = "unknown"
 )
 
+const (
+	preferredSigningSecretEnv = "MCP_AUDIT_SIGNING_SECRET"
+	legacySigningSecretEnv    = "AUDIT_SECRET"
+	recommendedSecretBytes    = 32
+)
+
 type appConfig struct {
 	Proxy struct {
 		Transport         string   `mapstructure:"transport"`
@@ -157,6 +163,9 @@ func main() {
 		os.Exit(1)
 	}
 	logger = newLogger(configuredLogLevel(flags))
+	if config.Audit.Sign && len([]byte(config.Audit.Secret)) < recommendedSecretBytes {
+		logger.Warn("audit signing secret is shorter than the recommended minimum", "recommended_bytes", recommendedSecretBytes)
+	}
 
 	metricsRecorder, metricsServer, err := newMetrics(config, logger)
 	if err != nil {
@@ -189,15 +198,11 @@ func main() {
 		}
 	}()
 
-	secret := config.Audit.Secret
-	if envSecret := os.Getenv("AUDIT_SECRET"); envSecret != "" {
-		secret = envSecret
-	}
 	var signer *audit.Signer
 	var integritySigner *auditintegrity.Signer
 	if config.Audit.Sign {
-		signer = audit.NewSigner(secret)
-		integritySigner = auditintegrity.NewSigner(secret, config.Audit.Signing.KeyID)
+		signer = audit.NewSigner(config.Audit.Secret)
+		integritySigner = auditintegrity.NewSigner(config.Audit.Secret, config.Audit.Signing.KeyID)
 	}
 	redactor := middleware.NewRedactor(config.Middleware.Redact.Enabled, config.Middleware.Redact.Patterns)
 	policyEngine, err := newPolicy(config)
@@ -367,7 +372,17 @@ func loadConfig(flags cliFlags) (appConfig, error) {
 	if err := v.Unmarshal(&config); err != nil {
 		return appConfig{}, fmt.Errorf("main: decode config: %w", err)
 	}
+	resolveSigningSecret(&config)
 	return config, validateConfig(config)
+}
+
+func resolveSigningSecret(config *appConfig) {
+	if legacySecret := os.Getenv(legacySigningSecretEnv); legacySecret != "" {
+		config.Audit.Secret = legacySecret
+	}
+	if preferredSecret, configured := os.LookupEnv(preferredSigningSecretEnv); configured {
+		config.Audit.Secret = preferredSecret
+	}
 }
 
 func dashboardConfigFromApp(config appConfig, store audit.Store, logger *slog.Logger) dashboard.Config {
@@ -521,6 +536,9 @@ func validateConfig(config appConfig) error {
 	if keyID := config.Audit.Signing.KeyID; config.Audit.Sign &&
 		(strings.TrimSpace(keyID) == "" || strings.ContainsFunc(keyID, unicode.IsSpace)) {
 		return fmt.Errorf("main: audit.signing.key_id must be non-empty and contain no whitespace")
+	}
+	if config.Audit.Sign && strings.TrimSpace(config.Audit.Secret) == "" {
+		return fmt.Errorf("main: audit signing is enabled but no signing secret is configured")
 	}
 	if config.Audit.Rotation.MaxSizeBytes < 0 {
 		return fmt.Errorf("main: audit.rotation.max_size_bytes must be >= 0")
