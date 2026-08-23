@@ -8,6 +8,9 @@ All notable changes to mcp-audit are documented in this file.
 
 - Terminal audit `outcome` values and UUIDv7 `audit_operation_id` correlation,
   with an exactly-once operation finalizer shared by HTTP and stdio transports.
+- Additive Integrity v2 metadata using RFC 8785 JCS and HMAC-SHA256 to protect
+  the complete critical audit record while preserving legacy signatures.
+- `audit.signing.key_id` for identifying the Integrity v2 verification key.
 - Security invariants and release gates for v1.2.0.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.

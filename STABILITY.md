@@ -33,9 +33,11 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 
 ### Audit entry JSON schema
 
-The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `signature`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `signature`, `integrity`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
 
 The signature is computed over `id + timestamp + method + tool_name + params`. Changing the signed field set requires a MAJOR bump because it invalidates existing signatures.
+
+The additive `integrity` object is a separately versioned format. Integrity v2 uses RFC 8785 JCS and HMAC-SHA256 to authenticate the complete critical record documented in [`docs/AUDIT_INTEGRITY.md`](docs/AUDIT_INTEGRITY.md). New integrity versions may be added without changing legacy `signature` semantics; an existing integrity version's algorithm or protected field set is stable.
 
 ### Prometheus metrics
 

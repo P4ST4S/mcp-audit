@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	auditintegrity "github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
@@ -60,7 +61,10 @@ type appConfig struct {
 		SQLitePath string `mapstructure:"sqlite_path"`
 		Sign       bool   `mapstructure:"sign"`
 		Secret     string `mapstructure:"secret"`
-		Async      struct {
+		Signing    struct {
+			KeyID string `mapstructure:"key_id"`
+		} `mapstructure:"signing"`
+		Async struct {
 			Enabled         bool `mapstructure:"enabled"`
 			QueueSize       int  `mapstructure:"queue_size"`
 			BatchSize       int  `mapstructure:"batch_size"`
@@ -190,8 +194,10 @@ func main() {
 		secret = envSecret
 	}
 	var signer *audit.Signer
+	var integritySigner *auditintegrity.Signer
 	if config.Audit.Sign {
 		signer = audit.NewSigner(secret)
+		integritySigner = auditintegrity.NewSigner(secret, config.Audit.Signing.KeyID)
 	}
 	redactor := middleware.NewRedactor(config.Middleware.Redact.Enabled, config.Middleware.Redact.Patterns)
 	policyEngine, err := newPolicy(config)
@@ -200,15 +206,16 @@ func main() {
 		os.Exit(1)
 	}
 	auditLogger := audit.NewLogger(audit.LoggerConfig{
-		Store:     store,
-		Signer:    signer,
-		Redactor:  redactor,
-		Log:       logger,
-		Transport: config.Proxy.Transport,
-		ClientID:  config.Proxy.ClientID,
-		ServerID:  config.Proxy.ServerID,
-		Metrics:   metricsRecorder,
-		Trace:     traceExporter,
+		Store:           store,
+		Signer:          signer,
+		IntegritySigner: integritySigner,
+		Redactor:        redactor,
+		Log:             logger,
+		Transport:       config.Proxy.Transport,
+		ClientID:        config.Proxy.ClientID,
+		ServerID:        config.Proxy.ServerID,
+		Metrics:         metricsRecorder,
+		Trace:           traceExporter,
 	})
 	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
 
@@ -395,6 +402,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
 	v.SetDefault("audit.sign", true)
+	v.SetDefault("audit.signing.key_id", auditintegrity.DefaultKeyID)
 	v.SetDefault("audit.async.enabled", false)
 	v.SetDefault("audit.async.queue_size", 4096)
 	v.SetDefault("audit.async.batch_size", 128)
@@ -509,6 +517,10 @@ func validateConfig(config appConfig) error {
 	case "jsonl", "sqlite":
 	default:
 		return fmt.Errorf("main: audit.storage must be jsonl or sqlite")
+	}
+	if keyID := config.Audit.Signing.KeyID; config.Audit.Sign &&
+		(strings.TrimSpace(keyID) == "" || strings.ContainsFunc(keyID, unicode.IsSpace)) {
+		return fmt.Errorf("main: audit.signing.key_id must be non-empty and contain no whitespace")
 	}
 	if config.Audit.Rotation.MaxSizeBytes < 0 {
 		return fmt.Errorf("main: audit.rotation.max_size_bytes must be >= 0")

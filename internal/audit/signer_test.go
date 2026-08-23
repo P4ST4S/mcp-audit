@@ -150,3 +150,22 @@ func TestSignerOutputIsHexEncoded(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacySignerVerificationRemainsCompatible(t *testing.T) {
+	signer := NewSigner("hunter2")
+	entry := Entry{
+		ID:        "01HY8G6Y8S6W9K6ZD7VJ4Q8X4R",
+		Timestamp: time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC),
+		Method:    "tools/call",
+		ToolName:  "read_file",
+		Params:    json.RawMessage(`{"path":"/tmp"}`),
+	}
+	entry.Signature = signer.Sign(entry)
+	if !signer.Verify(entry) {
+		t.Fatal("legacy signature should verify")
+	}
+	entry.Params = json.RawMessage(`{"path":"/etc"}`)
+	if signer.Verify(entry) {
+		t.Fatal("tampered legacy entry should not verify")
+	}
+}
