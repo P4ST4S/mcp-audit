@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +49,13 @@ type HTTPRetryConfig struct {
 	MaxIntervalMS     int
 }
 
+// HTTPServerTLSConfig configures TLS for incoming proxy connections.
+type HTTPServerTLSConfig struct {
+	Enabled  bool
+	CertFile string
+	KeyFile  string
+}
+
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
 	Upstream    string
@@ -64,6 +72,7 @@ type HTTPConfig struct {
 	IdleTimeout         time.Duration
 	AllowedOrigins      []string
 	AllowedHosts        []string
+	ServerTLS           HTTPServerTLSConfig
 	TLS                 httpclient.TLSConfig
 	Retry               HTTPRetryConfig
 	Audit               *audit.Logger
@@ -84,6 +93,7 @@ type HTTPProxy struct {
 	forwardHeaders map[string]struct{}
 	allowedOrigins map[string]struct{}
 	allowedHosts   map[string]struct{}
+	serverTLS      *tls.Config
 }
 
 // NewHTTPProxy creates an HTTP proxy.
@@ -147,6 +157,10 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if err != nil {
 		return nil, err
 	}
+	serverTLS, err := newHTTPServerTLSConfig(config.ServerTLS)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPProxy{
 		config:         config,
 		upstream:       upstream,
@@ -155,6 +169,7 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 		forwardHeaders: normalizedForwardHeaders(config.ForwardHeaders),
 		allowedOrigins: allowedOrigins,
 		allowedHosts:   allowedHosts,
+		serverTLS:      serverTLS,
 	}, nil
 }
 
@@ -164,7 +179,13 @@ func (p *HTTPProxy) ListenAndServe(ctx context.Context) error {
 
 	errs := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if p.serverTLS == nil {
+			err = server.ListenAndServe()
+		} else {
+			err = server.ListenAndServeTLS("", "")
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errs <- err
 			return
 		}
@@ -196,7 +217,28 @@ func (p *HTTPProxy) httpServer() *http.Server {
 		ReadTimeout:       p.config.ReadTimeout,
 		WriteTimeout:      p.config.WriteTimeout,
 		IdleTimeout:       p.config.IdleTimeout,
+		TLSConfig:         p.serverTLS,
 	}
+}
+
+func newHTTPServerTLSConfig(config HTTPServerTLSConfig) (*tls.Config, error) {
+	if !config.Enabled {
+		if config.CertFile != "" || config.KeyFile != "" {
+			return nil, fmt.Errorf("proxy: http: incoming TLS certificate requires tls.enabled=true")
+		}
+		return nil, nil
+	}
+	if config.CertFile == "" || config.KeyFile == "" {
+		return nil, fmt.Errorf("proxy: http: tls.cert_file and tls.key_file are required when TLS is enabled")
+	}
+	certificate, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: http: load incoming TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	}, nil
 }
 
 // ServeHTTP forwards a request to the upstream server and audits JSON-RPC messages.
