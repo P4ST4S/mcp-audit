@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 )
@@ -109,6 +110,67 @@ func TestHTTPProxyAuthorizationForwardingMigrationScenario(t *testing.T) {
 
 	if forwardingRec.Code != http.StatusOK {
 		t.Fatalf("forwarding status = %d, want 200", forwardingRec.Code)
+	}
+}
+
+func TestHTTPProxyAuthenticatesStaticBearerPrincipal(t *testing.T) {
+	const token = "0123456789abcdef0123456789abcdef"
+	authenticator, err := auth.NewStaticBearerAuthenticator(token, auth.Principal{
+		Subject:  "alice",
+		ClientID: "client-1",
+		Issuer:   "internal",
+		Roles:    []string{"operator"},
+	})
+	if err != nil {
+		t.Fatalf("new authenticator: %v", err)
+	}
+	metrics := &httpRejectionMetrics{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:      "http://upstream.local",
+		Authenticator: authenticator,
+		Metrics:       metrics,
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	upstreamCalls := 0
+	proxy.client.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		principal, ok := auth.PrincipalFromContext(r.Context())
+		if !ok || principal.Subject != "alice" || principal.ClientID != "client-1" {
+			t.Fatalf("upstream principal = %#v, ok = %t", principal, ok)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("upstream Authorization = %q, want stripped", got)
+		}
+		return okJSONResponse(), nil
+	})
+
+	for _, header := range []string{"", "Bearer wrong", "Bearer " + token} {
+		req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader("not-json-rpc"))
+		if header != "" {
+			req.Header.Set("Authorization", header)
+		}
+		rec := httptest.NewRecorder()
+		proxy.ServeHTTP(rec, req)
+		if header == "Bearer "+token {
+			if rec.Code != http.StatusOK {
+				t.Fatalf("valid token status = %d", rec.Code)
+			}
+			continue
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("invalid token status = %d", rec.Code)
+		}
+		if got := rec.Header().Get("WWW-Authenticate"); got != `Bearer realm="mcp-audit"` {
+			t.Fatalf("WWW-Authenticate = %q", got)
+		}
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
+	}
+	if len(metrics.rejections) != 2 || metrics.rejections[0] != "authentication" || metrics.rejections[1] != "authentication" {
+		t.Fatalf("rejection metrics = %#v", metrics.rejections)
 	}
 }
 

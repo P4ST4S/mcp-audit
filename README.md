@@ -157,6 +157,13 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.retry.max_interval_ms` | `2000` | Maximum upstream retry backoff. |
 | `proxy.client_id` | `claude-desktop` | Client identifier written to audit entries. |
 | `proxy.server_id` | `filesystem` | Server identifier written to audit entries. |
+| `auth.mode` | `none` | HTTP client authentication mode: `none` or `static_bearer`. None uses the explicitly configured static principal for local compatibility. |
+| `auth.static.bearer_token` | empty | Pre-shared bearer token for `static_bearer` mode. Prefer `MCP_AUDIT_STATIC_BEARER_TOKEN`; minimum 32 bytes. |
+| `auth.static.subject` | `local` | Trusted subject for the local or static-bearer principal. |
+| `auth.static.client_id` | empty | Principal client identifier. Empty inherits `proxy.client_id`. |
+| `auth.static.issuer` | `static` | Principal issuer label. |
+| `auth.static.roles` | empty | Roles attached to the principal for later policy evaluation. |
+| `auth.static.scopes` | empty | Scopes attached to the principal for later policy evaluation. |
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |
 | `audit.path` | `./audit.jsonl` | JSONL audit log path. |
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |

@@ -29,6 +29,16 @@ proxy:
   client_id: "claude-desktop"
   server_id: "filesystem"
 
+auth:
+  mode: none
+  static:
+    bearer_token: ""
+    subject: local
+    client_id: ""
+    issuer: static
+    roles: []
+    scopes: []
+
 audit:
   storage: jsonl
   path: ./audit.jsonl
