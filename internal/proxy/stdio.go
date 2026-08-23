@@ -335,8 +335,9 @@ func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
 }
 
 type pendingCall struct {
-	operation *audit.Operation
-	startedAt time.Time
+	operation       *audit.Operation
+	startedAt       time.Time
+	expectsResponse bool
 }
 
 type rpcState struct {
