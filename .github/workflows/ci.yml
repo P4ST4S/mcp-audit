@@ -28,6 +28,9 @@ jobs:
       - name: Test
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: End-to-end integration
+        run: go test -tags=integration ./tests/integration/...
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
