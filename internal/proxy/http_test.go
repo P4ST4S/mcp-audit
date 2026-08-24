@@ -1223,7 +1223,11 @@ func TestNewHTTPProxyRejectsInvalidAccessLists(t *testing.T) {
 	cases := []HTTPConfig{
 		{Upstream: "http://upstream.local", AllowedOrigins: []string{"file:///tmp"}},
 		{Upstream: "http://upstream.local", AllowedOrigins: []string{"https://example.com/path"}},
+		{Upstream: "http://upstream.local", AllowedOrigins: []string{"http://::"}},
 		{Upstream: "http://upstream.local", AllowedHosts: []string{"https://example.com"}},
+		{Upstream: "http://upstream.local", AllowedHosts: []string{"[:]"}},
+		{Upstream: "http://upstream.local", AllowedHosts: []string{"example.com.."}},
+		{Upstream: "http://upstream.local", AllowedHosts: []string{"example[."}},
 	}
 	for _, config := range cases {
 		if _, err := NewHTTPProxy(config); err == nil {
