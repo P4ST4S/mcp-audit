@@ -11,6 +11,13 @@ go build ./...
 go test ./...
 ```
 
+The full-binary suite is opt-in because it compiles subprocess fixtures and
+opens local ports. Run it with:
+
+```bash
+go test -tags=integration ./tests/integration/...
+```
+
 ## Before opening a PR
 
 - `go build ./...` passes
