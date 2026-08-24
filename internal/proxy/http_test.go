@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -690,22 +691,164 @@ func TestHTTPProxyAuditRedactsSensitiveJSONRPCParams(t *testing.T) {
 // TestHTTPProxyTimesOutUpstreamRequests verifies slow upstream requests use the
 // existing bad-gateway error path instead of hanging indefinitely.
 func TestHTTPProxyTimesOutUpstreamRequests(t *testing.T) {
+	store := &memoryAuditStore{}
 	proxy, err := NewHTTPProxy(HTTPConfig{
 		Upstream:          "http://upstream.local",
 		UpstreamTimeoutMS: 10,
+		Audit: audit.NewLogger(audit.LoggerConfig{
+			Store:     store,
+			Transport: "http",
+		}),
 	})
 	if err != nil {
 		t.Fatalf("new http proxy: %v", err)
 	}
 	proxy.client.Transport = blockingRoundTripper{}
 
-	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)))
 	rec := httptest.NewRecorder()
 
 	proxy.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeTimeout {
+		t.Fatalf("entries = %#v, want one timeout", store.entries)
+	}
+}
+
+func TestHTTPProxyAuditsUpstreamConnectionFailure(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("connection refused")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)))
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeUpstreamError {
+		t.Fatalf("entries = %#v, want one upstream_error", store.entries)
+	}
+}
+
+func TestHTTPProxyDoesNotMarkFailedNotificationSuccessful(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, fmt.Errorf("connection refused")
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)))
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeUpstreamError {
+		t.Fatalf("entries = %#v, want one upstream_error", store.entries)
+	}
+}
+
+func TestHTTPProxyAuditsMalformedUpstreamResponse(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("not-json")),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)))
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeMalformedUpstreamResponse {
+		t.Fatalf("entries = %#v, want one malformed_upstream_response", store.entries)
+	}
+}
+
+func TestHTTPProxyAuditsClientCancellation(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = blockingRoundTripper{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`))).WithContext(ctx)
+
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeClientDisconnect {
+		t.Fatalf("entries = %#v, want one client_disconnect", store.entries)
+	}
+}
+
+func TestHTTPProxyAuditsClientWriteFailure(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return okJSONResponse(), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)))
+
+	proxy.ServeHTTP(newFailingResponseWriter(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeClientDisconnect {
+		t.Fatalf("entries = %#v, want one client_disconnect", store.entries)
+	}
+}
+
+func TestHTTPProxyAuditsIncompleteSSEResponse(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader("data: not-json\n\n")),
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)))
+
+	proxy.ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeMalformedUpstreamResponse {
+		t.Fatalf("entries = %#v, want one malformed_upstream_response", store.entries)
 	}
 }
 
@@ -987,6 +1130,22 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
 }
+
+type failingResponseWriter struct {
+	header http.Header
+}
+
+func newFailingResponseWriter() *failingResponseWriter {
+	return &failingResponseWriter{header: make(http.Header)}
+}
+
+func (w *failingResponseWriter) Header() http.Header { return w.header }
+
+func (*failingResponseWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("client disconnected")
+}
+
+func (*failingResponseWriter) WriteHeader(int) {}
 
 func okJSONResponse() *http.Response {
 	return &http.Response{

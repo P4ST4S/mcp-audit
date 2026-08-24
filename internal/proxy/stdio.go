@@ -375,6 +375,7 @@ type pendingCall struct {
 	operation           *audit.Operation
 	startedAt           time.Time
 	completionDirection string
+	expectsResponse     bool
 }
 
 func auditPrincipal(principal *auth.Principal) *audit.Principal {
