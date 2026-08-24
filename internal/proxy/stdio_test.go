@@ -84,6 +84,12 @@ func TestStdioPolicyDeniesToolCallBeforeUpstream(t *testing.T) {
 	if entry.Error == nil || entry.Error.Code != policyDeniedCode {
 		t.Fatalf("entry error = %#v, want policy denial", entry.Error)
 	}
+	if entry.Outcome != audit.OutcomeDenied {
+		t.Fatalf("entry outcome = %q, want denied", entry.Outcome)
+	}
+	if entry.AuditOperationID == "" {
+		t.Fatal("entry audit_operation_id is empty")
+	}
 }
 
 func TestStdioPolicyDeniesResourceOperation(t *testing.T) {

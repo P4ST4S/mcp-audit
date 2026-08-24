@@ -25,3 +25,10 @@ func policyError(decision policy.Decision) *audit.RPCError {
 		Data:    data,
 	}
 }
+
+func outcomeForRPCError(rpcErr *audit.RPCError) audit.Outcome {
+	if rpcErr != nil {
+		return audit.OutcomeUpstreamError
+	}
+	return audit.OutcomeSuccess
+}

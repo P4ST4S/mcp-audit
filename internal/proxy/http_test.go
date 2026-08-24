@@ -666,6 +666,12 @@ func TestHTTPProxyAuditRedactsSensitiveJSONRPCParams(t *testing.T) {
 	if len(store.entries) != 1 {
 		t.Fatalf("stored entries = %d, want 1", len(store.entries))
 	}
+	if store.entries[0].Outcome != audit.OutcomeSuccess {
+		t.Fatalf("outcome = %q, want success", store.entries[0].Outcome)
+	}
+	if store.entries[0].AuditOperationID == "" {
+		t.Fatal("audit_operation_id is empty")
+	}
 	var params map[string]any
 	if err := json.Unmarshal(store.entries[0].Params, &params); err != nil {
 		t.Fatalf("decode params: %v", err)

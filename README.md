@@ -187,6 +187,7 @@ body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
 | `audit.sign` | `true` | Enable HMAC-SHA256 signatures when a secret is set. |
 | `audit.secret` | empty | HMAC secret. Prefer `AUDIT_SECRET`. |
+| `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |
@@ -266,6 +267,26 @@ CLI flags:
 --version      print version and exit
 --log-level    debug | info | warn | error
 ```
+
+### Verify audit evidence
+
+Verify every Integrity v2 or legacy signature in a JSONL or SQLite audit artifact:
+
+```bash
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.jsonl
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.db --json
+```
+
+The verifier detects JSONL and SQLite automatically. Use `--format jsonl` or
+`--format sqlite` to override detection, and `--key-id ID` when the Integrity v2
+records were produced with a non-default key ID. `AUDIT_SECRET` remains a
+compatible fallback for existing deployments.
+
+Text output reports `verified`, `invalid`, `legacy`, and `unsigned` record
+counts. Exit status `0` means every record has a valid Integrity v2 or legacy
+signature, `1` means at least one record is invalid or unsigned, and `2` means
+the command or artifact could not be read. `--json` emits the same result with
+the total count and first verification error for automation.
 
 ## Claude Desktop
 

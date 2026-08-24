@@ -37,15 +37,20 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - Existing flags keep their meaning and accepted values.
 - New flags are additive.
 - The `--version` output format is documented and stable: `mcp-audit <version> (commit <sha>, built <iso8601>)`.
+- The `verify` command accepts JSONL and SQLite audit artifacts. Its text counter
+  names, JSON result fields, and exit statuses (`0` verified, `1` invalid or
+  unsigned evidence, `2` usage or input failure) are stable.
 
 ### Audit entry JSON schema
 
-The fields recorded for each audit entry (`id`, `timestamp`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `signature`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `signature`, `integrity`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
 
 The `principal` object contains only authenticated `subject`, `client_id`, and
 `issuer`. Raw JWT claims are never part of the audit schema.
 
 The signature is computed over `id + timestamp + method + tool_name + params`. Changing the signed field set requires a MAJOR bump because it invalidates existing signatures.
+
+The additive `integrity` object is a separately versioned format. Integrity v2 uses RFC 8785 JCS and HMAC-SHA256 to authenticate the complete critical record documented in [`docs/AUDIT_INTEGRITY.md`](docs/AUDIT_INTEGRITY.md). New integrity versions may be added without changing legacy `signature` semantics; an existing integrity version's algorithm or protected field set is stable.
 
 ### Prometheus metrics
 

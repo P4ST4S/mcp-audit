@@ -25,6 +25,14 @@ All notable changes to mcp-audit are documented in this file.
 - MCP 2026-07-28 request inspection and Streamable HTTP forwarding, including
   consistency validation for `Mcp-Method`, `Mcp-Name`, and
   `Mcp-Protocol-Version` headers.
+- Terminal audit `outcome` values and UUIDv7 `audit_operation_id` correlation,
+  with an exactly-once operation finalizer shared by HTTP and stdio transports.
+- Additive Integrity v2 metadata using RFC 8785 JCS and HMAC-SHA256 to protect
+  the complete critical audit record while preserving legacy signatures.
+- `audit.signing.key_id` for identifying the Integrity v2 verification key.
+- `mcp-audit verify` for streaming verification of Integrity v2 and legacy
+  signatures in JSONL and SQLite audit artifacts, with text and JSON output.
+- Security invariants and release gates for v1.2.0.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
 - Claude Desktop stdio configuration example under `examples/claude-desktop/`.

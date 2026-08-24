@@ -59,6 +59,8 @@ audit:
   sqlite_path: ./audit.db
   sign: true
   secret: ""
+  signing:
+    key_id: "default"
   async:
     enabled: false
     queue_size: 4096

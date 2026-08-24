@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 )
 
 func newSQLiteStore(t *testing.T) *SQLiteStore {
@@ -384,6 +385,61 @@ func TestSQLiteStorePersistsPrincipalProjection(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Principal == nil || *entries[0].Principal != *want {
 		t.Fatalf("principal = %#v", entries)
+	}
+}
+
+func TestSQLiteStorePersistsOperationLifecycle(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:               "operation-1",
+		AuditOperationID: "019d2f6e-47ad-75ad-b506-b7990d8c11ba",
+		Outcome:          audit.OutcomeTimeout,
+		ClientID:         "c1",
+		ServerID:         "s1",
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].AuditOperationID != "019d2f6e-47ad-75ad-b506-b7990d8c11ba" {
+		t.Fatalf("operation ID = %q", entries[0].AuditOperationID)
+	}
+	if entries[0].Outcome != audit.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want timeout", entries[0].Outcome)
+	}
+}
+
+func TestSQLiteStorePersistsIntegrityMetadata(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:       "integrity-1",
+		ClientID: "c1",
+		ServerID: "s1",
+		Integrity: &integrity.Metadata{
+			Version:   integrity.VersionV2,
+			Algorithm: integrity.AlgorithmHMACV2,
+			KeyID:     "audit-prod",
+			Signature: "abcdef",
+		},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Integrity == nil {
+		t.Fatalf("integrity metadata did not round-trip: %#v", entries)
+	}
+	if entries[0].Integrity.KeyID != "audit-prod" {
+		t.Fatalf("key ID = %q, want audit-prod", entries[0].Integrity.KeyID)
 	}
 }
 

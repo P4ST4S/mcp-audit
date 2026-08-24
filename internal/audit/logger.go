@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 	"github.com/oklog/ulid/v2"
 )
 
@@ -16,6 +17,39 @@ const DirectionClientToServer = "client→server"
 
 // DirectionServerToClient names server-to-client audit direction.
 const DirectionServerToClient = "server→client"
+
+// Outcome is the terminal state of an accepted audit operation.
+type Outcome string
+
+const (
+	OutcomeSuccess                   Outcome = "success"
+	OutcomeDenied                    Outcome = "denied"
+	OutcomeRateLimited               Outcome = "rate_limited"
+	OutcomeUpstreamError             Outcome = "upstream_error"
+	OutcomeTimeout                   Outcome = "timeout"
+	OutcomeClientDisconnect          Outcome = "client_disconnect"
+	OutcomeMalformedUpstreamResponse Outcome = "malformed_upstream_response"
+	OutcomeCancelled                 Outcome = "cancelled"
+	OutcomeInternalError             Outcome = "internal_error"
+)
+
+// Valid reports whether outcome is a supported terminal state.
+func (o Outcome) Valid() bool {
+	switch o {
+	case OutcomeSuccess,
+		OutcomeDenied,
+		OutcomeRateLimited,
+		OutcomeUpstreamError,
+		OutcomeTimeout,
+		OutcomeClientDisconnect,
+		OutcomeMalformedUpstreamResponse,
+		OutcomeCancelled,
+		OutcomeInternalError:
+		return true
+	default:
+		return false
+	}
+}
 
 // RPCError represents a JSON-RPC error object.
 type RPCError struct {
@@ -33,21 +67,24 @@ type Principal struct {
 
 // Entry is a single audited JSON-RPC exchange or message.
 type Entry struct {
-	ID         string          `json:"id"`
-	Timestamp  time.Time       `json:"timestamp"`
-	Direction  string          `json:"direction"`
-	Transport  string          `json:"transport"`
-	Method     string          `json:"method"`
-	RequestID  string          `json:"request_id,omitempty"`
-	ToolName   string          `json:"tool_name,omitempty"`
-	Params     json.RawMessage `json:"params,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	Error      *RPCError       `json:"error,omitempty"`
-	DurationMs int64           `json:"duration_ms"`
-	ClientID   string          `json:"client_id"`
-	ServerID   string          `json:"server_id"`
-	Principal  *Principal      `json:"principal,omitempty"`
-	Signature  string          `json:"signature"`
+	ID               string              `json:"id"`
+	Timestamp        time.Time           `json:"timestamp"`
+	AuditOperationID string              `json:"audit_operation_id,omitempty"`
+	Outcome          Outcome             `json:"outcome,omitempty"`
+	Direction        string              `json:"direction"`
+	Transport        string              `json:"transport"`
+	Method           string              `json:"method"`
+	RequestID        string              `json:"request_id,omitempty"`
+	ToolName         string              `json:"tool_name,omitempty"`
+	Params           json.RawMessage     `json:"params,omitempty"`
+	Result           json.RawMessage     `json:"result,omitempty"`
+	Error            *RPCError           `json:"error,omitempty"`
+	DurationMs       int64               `json:"duration_ms"`
+	ClientID         string              `json:"client_id"`
+	ServerID         string              `json:"server_id"`
+	Principal        *Principal          `json:"principal,omitempty"`
+	Signature        string              `json:"signature"`
+	Integrity        *integrity.Metadata `json:"integrity,omitempty"`
 }
 
 // Store persists and queries audit entries.
@@ -75,28 +112,30 @@ type TraceExporter interface {
 
 // Logger records signed audit entries.
 type Logger struct {
-	store         Store
-	signer        *Signer
-	redactor      Redactor
-	traceExporter TraceExporter
-	log           *slog.Logger
-	transport     string
-	clientID      string
-	serverID      string
-	metrics       MetricsRecorder
+	store           Store
+	signer          *Signer
+	integritySigner *integrity.Signer
+	redactor        Redactor
+	traceExporter   TraceExporter
+	log             *slog.Logger
+	transport       string
+	clientID        string
+	serverID        string
+	metrics         MetricsRecorder
 }
 
 // LoggerConfig configures a Logger.
 type LoggerConfig struct {
-	Store     Store
-	Signer    *Signer
-	Redactor  Redactor
-	Log       *slog.Logger
-	Transport string
-	ClientID  string
-	ServerID  string
-	Metrics   MetricsRecorder
-	Trace     TraceExporter
+	Store           Store
+	Signer          *Signer
+	IntegritySigner *integrity.Signer
+	Redactor        Redactor
+	Log             *slog.Logger
+	Transport       string
+	ClientID        string
+	ServerID        string
+	Metrics         MetricsRecorder
+	Trace           TraceExporter
 }
 
 // NewLogger creates an audit logger.
@@ -106,15 +145,16 @@ func NewLogger(config LoggerConfig) *Logger {
 		logger = slog.Default()
 	}
 	return &Logger{
-		store:         config.Store,
-		signer:        config.Signer,
-		redactor:      config.Redactor,
-		traceExporter: config.Trace,
-		log:           logger,
-		transport:     config.Transport,
-		clientID:      config.ClientID,
-		serverID:      config.ServerID,
-		metrics:       config.Metrics,
+		store:           config.Store,
+		signer:          config.Signer,
+		integritySigner: config.IntegritySigner,
+		redactor:        config.Redactor,
+		traceExporter:   config.Trace,
+		log:             logger,
+		transport:       config.Transport,
+		clientID:        config.ClientID,
+		serverID:        config.ServerID,
+		metrics:         config.Metrics,
 	}
 }
 
@@ -145,6 +185,13 @@ func (l *Logger) Record(entry Entry) error {
 	if l.signer != nil {
 		entry.Signature = l.signer.Sign(entry)
 	}
+	if l.integritySigner != nil && l.integritySigner.Enabled() {
+		metadata, err := l.integritySigner.Sign(IntegrityEntryV2(entry))
+		if err != nil {
+			return fmt.Errorf("audit: logger: sign integrity v2: %w", err)
+		}
+		entry.Integrity = metadata
+	}
 	if err := l.store.Append(entry); err != nil {
 		return fmt.Errorf("audit: logger: append: %w", err)
 	}
@@ -158,6 +205,35 @@ func (l *Logger) Record(entry Entry) error {
 	}
 	l.log.Debug("audit entry recorded", "id", entry.ID, "method", entry.Method, "tool", entry.ToolName)
 	return nil
+}
+
+// IntegrityEntryV2 maps a stored audit entry to the Integrity v2 signed payload.
+func IntegrityEntryV2(entry Entry) integrity.EntryV2 {
+	var rpcErr *integrity.RPCErrorV2
+	if entry.Error != nil {
+		rpcErr = &integrity.RPCErrorV2{
+			Code:    entry.Error.Code,
+			Message: entry.Error.Message,
+			Data:    append(json.RawMessage(nil), entry.Error.Data...),
+		}
+	}
+	return integrity.EntryV2{
+		ID:               entry.ID,
+		Timestamp:        entry.Timestamp.UTC().Format(time.RFC3339Nano),
+		AuditOperationID: entry.AuditOperationID,
+		Outcome:          string(entry.Outcome),
+		Direction:        entry.Direction,
+		Transport:        entry.Transport,
+		Method:           entry.Method,
+		RequestID:        entry.RequestID,
+		ToolName:         entry.ToolName,
+		Params:           append(json.RawMessage(nil), entry.Params...),
+		Result:           append(json.RawMessage(nil), entry.Result...),
+		Error:            rpcErr,
+		DurationMS:       entry.DurationMs,
+		ClientID:         entry.ClientID,
+		ServerID:         entry.ServerID,
+	}
 }
 
 // Store returns the logger storage backend.

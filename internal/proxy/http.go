@@ -498,19 +498,16 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 		if msg.Method == "tools/call" {
 			toolName = metadata.Name
 		}
-		call := pendingCall{
-			method:    msg.Method,
-			requestID: jsonRPCID(msg.ID),
-			toolName:  toolName,
-			params:    msg.Params,
-			startedAt: startedAt,
-			principal: auditPrincipal(principal),
+		clientID := p.config.ClientID
+		if principal != nil && principal.ClientID != "" {
+			clientID = principal.ClientID
 		}
+		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, startedAt, clientID, auditPrincipal(principal))
 		decision := p.evaluatePolicy(principal, metadata.Method, metadata.Name)
 		p.recordPolicyDecision(decision)
 		if !decision.Allowed {
 			rpcErr := policyError(decision)
-			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+			if err := p.record(call, audit.OutcomeDenied, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 				p.log.Error("failed to audit policy denied http operation", "error", err)
 			}
 			return pending, buildErrorResponse(msg.ID, rpcErr)
@@ -520,7 +517,7 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 				p.config.Metrics.RecordRateLimitRejection(principal.ClientID, toolName)
 			}
 			rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
-			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+			if err := p.record(call, audit.OutcomeRateLimited, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 				p.log.Error("failed to audit rate limited http call", "error", err)
 			}
 			return pending, buildErrorResponse(msg.ID, rpcErr)
@@ -529,7 +526,7 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 			pending[string(msg.ID)] = call
 			continue
 		}
-		if err := p.record(call, audit.DirectionClientToServer, nil, nil); err != nil {
+		if err := p.record(call, audit.OutcomeSuccess, audit.DirectionClientToServer, nil, nil); err != nil {
 			p.log.Error("failed to audit http notification", "error", err)
 		}
 	}
@@ -550,7 +547,7 @@ func (p *HTTPProxy) observeHTTPResponse(raw []byte, pending map[string]pendingCa
 		if !ok {
 			continue
 		}
-		if err := p.record(call, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
+		if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
 			p.log.Error("failed to audit http response", "error", err)
 		}
 		delete(pending, string(msg.ID))
@@ -592,23 +589,34 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 	}
 }
 
-func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
-	principal := call.principal
+func (p *HTTPProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, startedAt time.Time, clientID string, principal *audit.Principal) pendingCall {
 	if principal == nil {
-		principal = staticAuditPrincipal(p.config.ClientID)
+		principal = staticAuditPrincipal(clientID)
 	}
-	return p.config.Audit.Record(audit.Entry{
-		Direction:  direction,
-		Method:     call.method,
-		RequestID:  call.requestID,
-		ToolName:   call.toolName,
-		Params:     call.params,
-		Result:     result,
-		Error:      rpcErr,
-		DurationMs: time.Since(call.startedAt).Milliseconds(),
-		ClientID:   principal.ClientID,
-		ServerID:   p.config.ServerID,
-		Principal:  principal,
+	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
+		Method:    method,
+		RequestID: requestID,
+		ToolName:  toolName,
+		Params:    params,
+		ClientID:  clientID,
+		ServerID:  p.config.ServerID,
+		Principal: principal,
+	}, startedAt)
+	if err != nil {
+		p.log.Error("failed to start audit operation", "method", method, "error", err)
+	}
+	return pendingCall{operation: operation, startedAt: startedAt}
+}
+
+func (p *HTTPProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	if call.operation == nil {
+		return fmt.Errorf("proxy: http: audit operation unavailable")
+	}
+	return call.operation.Finalize(audit.Completion{
+		Outcome:   outcome,
+		Direction: direction,
+		Result:    result,
+		Error:     rpcErr,
 	})
 }
 
