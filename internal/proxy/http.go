@@ -815,6 +815,9 @@ func normalizeOrigin(origin string) (string, error) {
 	if hostname == "" {
 		return "", fmt.Errorf("hostname is required")
 	}
+	if strings.Contains(hostname, ":") && net.ParseIP(hostname) == nil {
+		return "", fmt.Errorf("invalid IPv6 hostname")
+	}
 	port := parsed.Port()
 	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
 		port = ""
@@ -853,9 +856,18 @@ func normalizeHostname(host string) (string, error) {
 	} else if strings.Count(host, ":") == 1 {
 		return "", fmt.Errorf("invalid host and port")
 	}
-	hostname = strings.ToLower(strings.TrimSuffix(strings.Trim(hostname, "[]"), "."))
+	if strings.ContainsAny(hostname, "[]") {
+		return "", fmt.Errorf("invalid hostname brackets")
+	}
+	if strings.HasSuffix(hostname, "..") {
+		return "", fmt.Errorf("invalid hostname")
+	}
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
 	if hostname == "" || strings.ContainsFunc(hostname, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
 		return "", fmt.Errorf("invalid hostname")
+	}
+	if strings.Contains(hostname, ":") && net.ParseIP(hostname) == nil {
+		return "", fmt.Errorf("invalid IPv6 hostname")
 	}
 	return hostname, nil
 }
