@@ -17,6 +17,9 @@ proxy:
       - 127.0.0.1
       - "::1"
   tls:
+    enabled: false
+    cert_file: ""
+    key_file: ""
     ca_file: ""
     server_name: ""
     insecure_skip_verify: false

@@ -53,6 +53,9 @@ type appConfig struct {
 			AllowedHosts        []string      `mapstructure:"allowed_hosts"`
 		} `mapstructure:"http"`
 		TLS struct {
+			Enabled            bool   `mapstructure:"enabled"`
+			CertFile           string `mapstructure:"cert_file"`
+			KeyFile            string `mapstructure:"key_file"`
 			CAFile             string `mapstructure:"ca_file"`
 			ServerName         string `mapstructure:"server_name"`
 			InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
@@ -311,6 +314,11 @@ func main() {
 			AllowedOrigins:      config.Proxy.HTTP.AllowedOrigins,
 			AllowedHosts:        config.Proxy.HTTP.AllowedHosts,
 			Authenticator:       authenticator,
+			ServerTLS: proxy.HTTPServerTLSConfig{
+				Enabled:  config.Proxy.TLS.Enabled,
+				CertFile: config.Proxy.TLS.CertFile,
+				KeyFile:  config.Proxy.TLS.KeyFile,
+			},
 			TLS: httpclient.TLSConfig{
 				CAFile:             config.Proxy.TLS.CAFile,
 				ServerName:         config.Proxy.TLS.ServerName,
@@ -335,7 +343,7 @@ func main() {
 			logger.Error("failed to create http proxy", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("http proxy listening", "bind_address", config.Proxy.BindAddress, "port", config.Proxy.Port, "upstream", config.Proxy.Upstream)
+		logger.Info("http proxy listening", "bind_address", config.Proxy.BindAddress, "port", config.Proxy.Port, "tls", config.Proxy.TLS.Enabled, "upstream", config.Proxy.Upstream)
 		err = httpProxy.ListenAndServe(ctx)
 	default:
 		err = fmt.Errorf("main: unknown transport %q", config.Proxy.Transport)
@@ -456,6 +464,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.http.allowed_origins", []string{})
 	v.SetDefault("proxy.http.allowed_hosts", []string{})
 	v.SetDefault("proxy.tls.ca_file", "")
+	v.SetDefault("proxy.tls.enabled", false)
+	v.SetDefault("proxy.tls.cert_file", "")
+	v.SetDefault("proxy.tls.key_file", "")
 	v.SetDefault("proxy.tls.server_name", "")
 	v.SetDefault("proxy.tls.insecure_skip_verify", false)
 	v.SetDefault("proxy.tls.client_cert_file", "")
@@ -590,6 +601,15 @@ func validateConfig(config appConfig) error {
 	}
 	if (config.Proxy.TLS.ClientCertFile == "") != (config.Proxy.TLS.ClientKeyFile == "") {
 		return fmt.Errorf("main: proxy.tls.client_cert_file and proxy.tls.client_key_file must be configured together")
+	}
+	if config.Proxy.TLS.Enabled && config.Proxy.Transport != "http" {
+		return fmt.Errorf("main: proxy.tls.enabled requires proxy.transport=http")
+	}
+	if config.Proxy.TLS.Enabled && (config.Proxy.TLS.CertFile == "" || config.Proxy.TLS.KeyFile == "") {
+		return fmt.Errorf("main: proxy.tls.cert_file and proxy.tls.key_file are required when incoming TLS is enabled")
+	}
+	if !config.Proxy.TLS.Enabled && (config.Proxy.TLS.CertFile != "" || config.Proxy.TLS.KeyFile != "") {
+		return fmt.Errorf("main: proxy.tls.cert_file and proxy.tls.key_file require proxy.tls.enabled=true")
 	}
 	if err := validateAuthConfig(config); err != nil {
 		return err

@@ -15,6 +15,8 @@ All notable changes to mcp-audit are documented in this file.
 - OIDC resource-server authentication with rotating JWKS, explicit asymmetric
   algorithm allowlisting, and mandatory signature, issuer, audience, expiry,
   and not-before validation.
+- Optional incoming TLS for the HTTP proxy, with a TLS 1.2 minimum and
+  startup validation of the configured certificate and private key.
 - HTTP proxy request-body and header limits, complete server timeouts, optional
   browser Origin validation, Host validation for DNS-rebinding protection, and
   `mcp_audit_http_request_rejections_total` metrics.

@@ -2,11 +2,22 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -717,6 +728,90 @@ func TestNewHTTPProxyRejectsInvalidTLSCAFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected TLS CA file error")
 	}
+}
+
+func TestHTTPProxyIncomingTLSHandshake(t *testing.T) {
+	certFile, keyFile := writeHTTPServerCertificate(t)
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		ServerTLS: HTTPServerTLSConfig{
+			Enabled:  true,
+			CertFile: certFile,
+			KeyFile:  keyFile,
+		},
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	if proxy.serverTLS == nil || proxy.serverTLS.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("server TLS config = %#v, want TLS 1.2 minimum", proxy.serverTLS)
+	}
+
+	serverSide, clientSide := net.Pipe()
+	deadline := time.Now().Add(5 * time.Second)
+	_ = serverSide.SetDeadline(deadline)
+	_ = clientSide.SetDeadline(deadline)
+	serverConn := tls.Server(serverSide, proxy.serverTLS.Clone())
+	clientConn := tls.Client(clientSide, &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}) //nolint:gosec -- self-signed test certificate
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- serverConn.Handshake() }()
+	if err := clientConn.Handshake(); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("server handshake: %v", err)
+	}
+	_ = clientConn.Close()
+	_ = serverConn.Close()
+}
+
+func TestHTTPProxyRejectsInvalidIncomingTLSConfig(t *testing.T) {
+	cases := []HTTPServerTLSConfig{
+		{Enabled: true},
+		{Enabled: true, CertFile: "server.crt"},
+		{CertFile: "server.crt", KeyFile: "server.key"},
+		{Enabled: true, CertFile: "missing.crt", KeyFile: "missing.key"},
+	}
+	for _, config := range cases {
+		if _, err := NewHTTPProxy(HTTPConfig{Upstream: "http://upstream.local", ServerTLS: config}); err == nil {
+			t.Fatalf("expected error for incoming TLS config %#v", config)
+		}
+	}
+}
+
+func writeHTTPServerCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		DNSNames:     []string{"localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	certificateDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private key: %v", err)
+	}
+	directory := t.TempDir()
+	certFile := filepath.Join(directory, "server.crt")
+	keyFile := filepath.Join(directory, "server.key")
+	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateDER}), 0600); err != nil {
+		t.Fatalf("write certificate: %v", err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0600); err != nil {
+		t.Fatalf("write private key: %v", err)
+	}
+	return certFile, keyFile
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
