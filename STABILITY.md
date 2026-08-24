@@ -25,6 +25,8 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
 - `proxy.bind_address` and the `proxy.http.*` request-limit, timeout, Origin, and Host validation keys are part of the stable configuration surface.
 - The `auth.mode` and `auth.static.*` keys are part of the stable configuration surface.
+- Principal-aware `policy.rules` selectors (`subject`, `issuer`, `role`,
+  `scope`, `method`, and `name`) are additive stable configuration keys.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`, `audit.rotation.interval`, `audit.rotation.max_age_days`) are part of the stable configuration surface.
 
 ### CLI flags
@@ -35,7 +37,10 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 
 ### Audit entry JSON schema
 
-The fields recorded for each audit entry (`id`, `timestamp`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `signature`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+The fields recorded for each audit entry (`id`, `timestamp`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `signature`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+
+The `principal` object contains only authenticated `subject`, `client_id`, and
+`issuer`. Raw JWT claims are never part of the audit schema.
 
 The signature is computed over `id + timestamp + method + tool_name + params`. Changing the signed field set requires a MAJOR bump because it invalidates existing signatures.
 

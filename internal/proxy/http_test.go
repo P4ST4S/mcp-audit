@@ -15,6 +15,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
+	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
 
 func TestHTTPProxyStripsAuthorizationByDefault(t *testing.T) {
@@ -171,6 +172,69 @@ func TestHTTPProxyAuthenticatesStaticBearerPrincipal(t *testing.T) {
 	}
 	if len(metrics.rejections) != 2 || metrics.rejections[0] != "authentication" || metrics.rejections[1] != "authentication" {
 		t.Fatalf("rejection metrics = %#v", metrics.rejections)
+	}
+}
+
+func TestHTTPProxyUsesAuthenticatedPrincipalForPolicyAndAudit(t *testing.T) {
+	authenticator, err := auth.NewNoneAuthenticator(auth.Principal{
+		Subject:  "alice",
+		ClientID: "client-1",
+		Issuer:   "https://issuer.example.com",
+		Roles:    []string{"operator"},
+		Scopes:   []string{"tools:delete"},
+	})
+	if err != nil {
+		t.Fatalf("new authenticator: %v", err)
+	}
+	engine, err := policy.NewEngine(policy.Config{
+		Enabled:       true,
+		DefaultAction: policy.ActionAllow,
+		Rules: []policy.Rule{{
+			Action:  policy.ActionDeny,
+			Subject: "alice",
+			Issuer:  "https://issuer.example.com",
+			Role:    "operator",
+			Scope:   "tools:delete",
+			Method:  "tools/call",
+			Name:    "delete_file",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new policy engine: %v", err)
+	}
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream:      "http://upstream.local",
+		Authenticator: authenticator,
+		Policy:        engine,
+		Limiter:       middleware.NewRateLimiter(false, 0),
+		Audit:         audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+		ServerID:      "filesystem",
+	})
+	if err != nil {
+		t.Fatalf("new http proxy: %v", err)
+	}
+	upstreamCalls := 0
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return okJSONResponse(), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_file"}}`))
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+	}
+	if len(store.entries) != 1 {
+		t.Fatalf("audit entries = %d, want 1", len(store.entries))
+	}
+	entry := store.entries[0]
+	if entry.ClientID != "client-1" || entry.Principal == nil || entry.Principal.Subject != "alice" || entry.Principal.Issuer != "https://issuer.example.com" {
+		t.Fatalf("audit identity = %#v", entry)
+	}
+	if entry.Error == nil || entry.Error.Code != policyDeniedCode {
+		t.Fatalf("audit error = %#v", entry.Error)
 	}
 }
 

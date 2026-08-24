@@ -372,6 +372,21 @@ func TestSQLiteStorePersistsRequestID(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsPrincipalProjection(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+	want := &audit.Principal{Subject: "alice", ClientID: "client-1", Issuer: "https://issuer.example.com"}
+	mustSQLiteAppend(t, store, audit.Entry{ID: "principal-1", ClientID: "client-1", ServerID: "s1", Principal: want})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Principal == nil || *entries[0].Principal != *want {
+		t.Fatalf("principal = %#v", entries)
+	}
+}
+
 func TestNewSQLiteStoreCreatesParentDirectory(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sub", "dir", "audit.db")

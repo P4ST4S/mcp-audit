@@ -156,3 +156,47 @@ func TestEvaluateWildcardMatchesAnyValue(t *testing.T) {
 		t.Fatal("wildcard rule should deny any client/tool")
 	}
 }
+
+func TestEngineMatchesAuthenticatedPrincipalAndOperation(t *testing.T) {
+	engine, err := NewEngine(Config{
+		Enabled:       true,
+		DefaultAction: ActionAllow,
+		Rules: []Rule{{
+			Action:   ActionDeny,
+			Subject:  "alice",
+			ClientID: "client-1",
+			Issuer:   "https://issuer.example.com",
+			Role:     "operator",
+			Scope:    "tools:delete",
+			ServerID: "filesystem",
+			Method:   "tools/call",
+			Name:     "delete_file",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	request := Request{
+		Subject:  "alice",
+		ClientID: "client-1",
+		Issuer:   "https://issuer.example.com",
+		Roles:    []string{"reader", "operator"},
+		Scopes:   []string{"tools:read", "tools:delete"},
+		ServerID: "filesystem",
+		Method:   "tools/call",
+		Name:     "delete_file",
+		ToolName: "delete_file",
+	}
+	if engine.Evaluate(request).Allowed {
+		t.Fatal("matching authenticated principal was allowed")
+	}
+	request.Subject = "bob"
+	if !engine.Evaluate(request).Allowed {
+		t.Fatal("non-matching subject was denied")
+	}
+	request.Subject = "alice"
+	request.Scopes = []string{"tools:read"}
+	if !engine.Evaluate(request).Allowed {
+		t.Fatal("principal without required scope was denied by non-matching rule")
+	}
+}

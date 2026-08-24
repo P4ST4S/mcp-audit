@@ -24,6 +24,13 @@ type RPCError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
+// Principal is the minimal authenticated identity retained as audit evidence.
+type Principal struct {
+	Subject  string `json:"subject"`
+	ClientID string `json:"client_id"`
+	Issuer   string `json:"issuer"`
+}
+
 // Entry is a single audited JSON-RPC exchange or message.
 type Entry struct {
 	ID         string          `json:"id"`
@@ -39,6 +46,7 @@ type Entry struct {
 	DurationMs int64           `json:"duration_ms"`
 	ClientID   string          `json:"client_id"`
 	ServerID   string          `json:"server_id"`
+	Principal  *Principal      `json:"principal,omitempty"`
 	Signature  string          `json:"signature"`
 }
 
