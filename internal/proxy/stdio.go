@@ -67,7 +67,9 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 	}
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	defer stopCleanup()
-	go p.state.cleanupLoop(cleanupCtx, pendingCallTTL, pendingCallCleanupInterval)
+	go p.state.cleanupLoop(cleanupCtx, pendingCallTTL, pendingCallCleanupInterval, func(calls []pendingCall) {
+		p.finalizeCalls(calls, audit.OutcomeTimeout)
+	})
 
 	cmd := exec.Command("/bin/sh", "-c", p.config.Upstream)
 	stdin, err := cmd.StdinPipe()
@@ -108,11 +110,15 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		stopCleanup()
 		_ = p.shutdownUpstream(cmd, waitErr)
 		p.waitForPipes(pipesDone)
+		p.finalizeAll(audit.OutcomeCancelled)
 		return nil
 	case err := <-waitErr:
+		stopCleanup()
 		p.waitForPipes(pipesDone)
+		p.finalizeAll(audit.OutcomeUpstreamError)
 		if err != nil {
 			return fmt.Errorf("proxy: stdio: wait: %w", err)
 		}
@@ -165,6 +171,7 @@ func (p *StdioProxy) pipeClientToServer(ctx context.Context, src io.Reader, upst
 		}
 		if _, err := upstream.Write(append(line, '\n')); err != nil {
 			p.log.Error("failed to write to upstream", "error", err)
+			p.finalizeAll(audit.OutcomeUpstreamError)
 			return
 		}
 		select {
@@ -175,6 +182,7 @@ func (p *StdioProxy) pipeClientToServer(ctx context.Context, src io.Reader, upst
 	}
 	if err := scanner.Err(); err != nil {
 		p.log.Error("failed to read client stdin", "error", err)
+		p.finalizeAll(audit.OutcomeClientDisconnect)
 	}
 }
 
@@ -187,6 +195,7 @@ func (p *StdioProxy) pipeServerToClient(ctx context.Context, src io.Reader, clie
 		clientMu.Unlock()
 		if err != nil {
 			p.log.Error("failed to write to client stdout", "error", err)
+			p.finalizeAll(audit.OutcomeClientDisconnect)
 			return
 		}
 		p.observeServerMessage(line)
@@ -198,6 +207,7 @@ func (p *StdioProxy) pipeServerToClient(ctx context.Context, src io.Reader, clie
 	}
 	if err := scanner.Err(); err != nil {
 		p.log.Error("failed to read upstream stdout", "error", err)
+		p.finalizeAll(audit.OutcomeUpstreamError)
 	}
 }
 
@@ -224,7 +234,7 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 			if msg.Method == "tools/call" {
 				toolName = metadata.Name
 			}
-			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, time.Now())
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, audit.DirectionServerToClient, time.Now())
 			decision := p.evaluatePolicy(metadata.Method, metadata.Name)
 			p.recordPolicyDecision(decision)
 			if !decision.Allowed {
@@ -268,12 +278,13 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	messages, err := decodeMessages(raw)
 	if err != nil {
 		p.log.Warn("failed to inspect server message", "error", err)
+		p.finalizeCalls(p.state.takeClients(), audit.OutcomeMalformedUpstreamResponse)
 		return
 	}
 	for _, msg := range messages {
 		if msg.Method != "" {
 			toolName := toolNameFromParams(msg.Method, msg.Params)
-			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, time.Now())
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, audit.DirectionClientToServer, time.Now())
 			if len(msg.ID) > 0 {
 				p.state.rememberServer(string(msg.ID), call)
 				continue
@@ -293,7 +304,7 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	}
 }
 
-func (p *StdioProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, startedAt time.Time) pendingCall {
+func (p *StdioProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, completionDirection string, startedAt time.Time) pendingCall {
 	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
 		Method:    method,
 		RequestID: requestID,
@@ -306,7 +317,19 @@ func (p *StdioProxy) newPendingCall(method, requestID, toolName string, params j
 	if err != nil {
 		p.log.Error("failed to start audit operation", "method", method, "error", err)
 	}
-	return pendingCall{operation: operation, startedAt: startedAt}
+	return pendingCall{operation: operation, startedAt: startedAt, completionDirection: completionDirection}
+}
+
+func (p *StdioProxy) finalizeAll(outcome audit.Outcome) {
+	p.finalizeCalls(p.state.takeAll(), outcome)
+}
+
+func (p *StdioProxy) finalizeCalls(calls []pendingCall, outcome audit.Outcome) {
+	for _, call := range calls {
+		if err := p.record(call, outcome, call.completionDirection, nil, nil); err != nil {
+			p.log.Error("failed to finalize incomplete audit operation", "outcome", outcome, "error", err)
+		}
+	}
 }
 
 func (p *StdioProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
@@ -349,8 +372,9 @@ func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
 }
 
 type pendingCall struct {
-	operation *audit.Operation
-	startedAt time.Time
+	operation           *audit.Operation
+	startedAt           time.Time
+	completionDirection string
 }
 
 func auditPrincipal(principal *auth.Principal) *audit.Principal {
@@ -377,7 +401,7 @@ func newRPCState() *rpcState {
 	}
 }
 
-func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval time.Duration) {
+func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval time.Duration, onExpired func([]pendingCall)) {
 	if ttl <= 0 {
 		return
 	}
@@ -391,29 +415,62 @@ func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval 
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.purgeExpired(now, ttl)
+			expired := s.takeExpired(now, ttl)
+			if len(expired) > 0 && onExpired != nil {
+				onExpired(expired)
+			}
 		}
 	}
 }
 
 func (s *rpcState) purgeExpired(now time.Time, ttl time.Duration) int {
+	return len(s.takeExpired(now, ttl))
+}
+
+func (s *rpcState) takeExpired(now time.Time, ttl time.Duration) []pendingCall {
 	cutoff := now.Add(-ttl)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	purged := 0
+	var expired []pendingCall
 	for id, call := range s.clientPending {
 		if call.startedAt.Before(cutoff) {
 			delete(s.clientPending, id)
-			purged++
+			expired = append(expired, call)
 		}
 	}
 	for id, call := range s.serverPending {
 		if call.startedAt.Before(cutoff) {
 			delete(s.serverPending, id)
-			purged++
+			expired = append(expired, call)
 		}
 	}
-	return purged
+	return expired
+}
+
+func (s *rpcState) takeClients() []pendingCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := make([]pendingCall, 0, len(s.clientPending))
+	for id, call := range s.clientPending {
+		calls = append(calls, call)
+		delete(s.clientPending, id)
+	}
+	return calls
+}
+
+func (s *rpcState) takeAll() []pendingCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := make([]pendingCall, 0, len(s.clientPending)+len(s.serverPending))
+	for id, call := range s.clientPending {
+		calls = append(calls, call)
+		delete(s.clientPending, id)
+	}
+	for id, call := range s.serverPending {
+		calls = append(calls, call)
+		delete(s.serverPending, id)
+	}
+	return calls
 }
 
 func (s *rpcState) rememberClient(id string, call pendingCall) {

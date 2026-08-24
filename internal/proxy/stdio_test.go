@@ -1,7 +1,12 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -116,6 +121,136 @@ func TestStdioPolicyDeniesResourceOperation(t *testing.T) {
 	if store.entries[0].Method != "resources/read" || store.entries[0].ToolName != "" || store.entries[0].Error == nil {
 		t.Fatalf("entry = %#v", store.entries[0])
 	}
+}
+
+func TestStdioMalformedUpstreamResponseFinalizesPendingCall(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:   audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+
+	proxy.observeClientMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`))
+	proxy.observeServerMessage([]byte(`not-json`))
+
+	if len(store.entries) != 1 {
+		t.Fatalf("stored entries = %d, want 1", len(store.entries))
+	}
+	entry := store.entries[0]
+	if entry.Outcome != audit.OutcomeMalformedUpstreamResponse {
+		t.Fatalf("outcome = %q, want malformed_upstream_response", entry.Outcome)
+	}
+	if entry.Direction != audit.DirectionServerToClient {
+		t.Fatalf("direction = %q, want server-to-client", entry.Direction)
+	}
+	if entry.AuditOperationID == "" {
+		t.Fatal("audit_operation_id is empty")
+	}
+
+	proxy.observeServerMessage([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	if len(store.entries) != 1 {
+		t.Fatalf("late response created a duplicate terminal entry: %d", len(store.entries))
+	}
+}
+
+func TestStdioExpiredPendingCallFinalizesAsTimeout(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:   audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+
+	proxy.observeClientMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read"}`))
+	call, ok := proxy.state.takeClient("1")
+	if !ok {
+		t.Fatal("pending call was not registered")
+	}
+	call.startedAt = now.Add(-pendingCallTTL - time.Second)
+	proxy.state.rememberClient("1", call)
+
+	proxy.finalizeCalls(proxy.state.takeExpired(now, pendingCallTTL), audit.OutcomeTimeout)
+	if len(store.entries) != 1 {
+		t.Fatalf("stored entries = %d, want 1", len(store.entries))
+	}
+	if store.entries[0].Outcome != audit.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want timeout", store.entries[0].Outcome)
+	}
+	if _, ok := proxy.state.takeClient("1"); ok {
+		t.Fatal("expired call remains pending")
+	}
+}
+
+func TestStdioUpstreamTerminationFinalizesBothDirections(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:   audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+
+	proxy.observeClientMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`))
+	proxy.observeServerMessage([]byte(`{"jsonrpc":"2.0","id":2,"method":"sampling/createMessage"}`))
+	proxy.finalizeAll(audit.OutcomeUpstreamError)
+
+	if len(store.entries) != 2 {
+		t.Fatalf("stored entries = %d, want 2", len(store.entries))
+	}
+	directions := make(map[string]bool)
+	for _, entry := range store.entries {
+		if entry.Outcome != audit.OutcomeUpstreamError {
+			t.Fatalf("outcome = %q, want upstream_error", entry.Outcome)
+		}
+		directions[entry.Direction] = true
+	}
+	if !directions[audit.DirectionServerToClient] || !directions[audit.DirectionClientToServer] {
+		t.Fatalf("terminal directions = %#v, want both directions", directions)
+	}
+}
+
+func TestStdioUpstreamWriteFailureFinalizesAcceptedCall(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:   audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+
+	proxy.pipeClientToServer(
+		context.Background(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`+"\n"),
+		errorWriter{},
+		io.Discard,
+		&sync.Mutex{},
+	)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeUpstreamError {
+		t.Fatalf("entries = %#v, want one upstream_error", store.entries)
+	}
+}
+
+func TestStdioClientWriteFailureFinalizesPendingCall(t *testing.T) {
+	store := &memoryAuditStore{}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:   audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter: middleware.NewRateLimiter(false, 0),
+	})
+	proxy.observeClientMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/list"}`))
+
+	proxy.pipeServerToClient(
+		context.Background(),
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{}}`+"\n"),
+		errorWriter{},
+		&sync.Mutex{},
+	)
+
+	if len(store.entries) != 1 || store.entries[0].Outcome != audit.OutcomeClientDisconnect {
+		t.Fatalf("entries = %#v, want one client_disconnect", store.entries)
+	}
+}
+
+type errorWriter struct{}
+
+func (errorWriter) Write([]byte) (int, error) {
+	return 0, errors.New("write failed")
 }
 
 type memoryAuditStore struct {
