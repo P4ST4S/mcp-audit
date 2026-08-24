@@ -24,7 +24,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
 - `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
 - `proxy.bind_address` and the `proxy.http.*` request-limit, timeout, Origin, and Host validation keys are part of the stable configuration surface.
-- The `auth.mode` and `auth.static.*` keys are part of the stable configuration surface.
+- The `auth.mode`, `auth.static.*`, and `auth.oidc.*` keys are part of the stable configuration surface.
 - Principal-aware `policy.rules` selectors (`subject`, `issuer`, `role`,
   `scope`, `method`, and `name`) are additive stable configuration keys.
 - `policy.scope` is a stable configuration key. Its compatibility default is

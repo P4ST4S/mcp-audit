@@ -12,6 +12,9 @@ All notable changes to mcp-audit are documented in this file.
   and operation name, plus minimal principal evidence in JSONL and SQLite.
 - Optional policy enforcement across all client-originated MCP operation
   families, with a compatibility-preserving `tools_only` default.
+- OIDC resource-server authentication with rotating JWKS, explicit asymmetric
+  algorithm allowlisting, and mandatory signature, issuer, audience, expiry,
+  and not-before validation.
 - HTTP proxy request-body and header limits, complete server timeouts, optional
   browser Origin validation, Host validation for DNS-rebinding protection, and
   `mcp_audit_http_request_rejections_total` metrics.

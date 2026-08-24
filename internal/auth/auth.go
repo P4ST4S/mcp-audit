@@ -8,6 +8,7 @@ import (
 const (
 	ModeNone         = "none"
 	ModeStaticBearer = "static_bearer"
+	ModeOIDC         = "oidc"
 )
 
 // Principal is the authenticated identity used by gateway controls.
