@@ -109,6 +109,7 @@ type appConfig struct {
 	Policy struct {
 		Enabled       bool          `mapstructure:"enabled"`
 		DefaultAction string        `mapstructure:"default_action"`
+		Scope         string        `mapstructure:"scope"`
 		Rules         []policy.Rule `mapstructure:"rules"`
 	} `mapstructure:"policy"`
 	Dashboard struct {
@@ -469,6 +470,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("middleware.redact.patterns", middleware.DefaultRedactPatterns)
 	v.SetDefault("policy.enabled", false)
 	v.SetDefault("policy.default_action", policy.ActionAllow)
+	v.SetDefault("policy.scope", policy.ScopeToolsOnly)
 	v.SetDefault("policy.rules", []policy.Rule{})
 	v.SetDefault("dashboard.enabled", true)
 	v.SetDefault("dashboard.bind_address", dashboard.DefaultBindAddress)
@@ -685,14 +687,19 @@ func validateForwardHeaders(headers []string) error {
 }
 
 func newPolicy(config appConfig) (*policy.Engine, error) {
+	engine, err := policy.NewEngine(policy.Config{
+		Enabled:       config.Policy.Enabled,
+		DefaultAction: config.Policy.DefaultAction,
+		Scope:         config.Policy.Scope,
+		Rules:         config.Policy.Rules,
+	})
+	if err != nil {
+		return nil, err
+	}
 	if !config.Policy.Enabled {
 		return nil, nil
 	}
-	return policy.NewEngine(policy.Config{
-		Enabled:       config.Policy.Enabled,
-		DefaultAction: config.Policy.DefaultAction,
-		Rules:         config.Policy.Rules,
-	})
+	return engine, nil
 }
 
 func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metrics.PrometheusRecorder, error) {

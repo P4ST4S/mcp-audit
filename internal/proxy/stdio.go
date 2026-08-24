@@ -14,6 +14,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/auth"
+	"github.com/P4ST4S/mcp-audit/internal/mcp"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
@@ -218,23 +219,25 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 	}
 	for _, msg := range messages {
 		if msg.Method != "" {
-			toolName := toolNameFromParams(msg.Method, msg.Params)
+			metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
+			toolName := ""
 			if msg.Method == "tools/call" {
-				decision := p.evaluatePolicy(toolName)
-				p.recordPolicyDecision(decision)
-				if !decision.Allowed {
-					rpcErr := policyError(decision)
-					if err := p.record(pendingCall{
-						method:    msg.Method,
-						requestID: jsonRPCID(msg.ID),
-						toolName:  toolName,
-						params:    msg.Params,
-						startedAt: time.Now(),
-					}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
-						p.log.Error("failed to audit policy denied call", "error", err)
-					}
-					return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
+				toolName = metadata.Name
+			}
+			decision := p.evaluatePolicy(metadata.Method, metadata.Name)
+			p.recordPolicyDecision(decision)
+			if !decision.Allowed {
+				rpcErr := policyError(decision)
+				if err := p.record(pendingCall{
+					method:    msg.Method,
+					requestID: jsonRPCID(msg.ID),
+					toolName:  toolName,
+					params:    msg.Params,
+					startedAt: time.Now(),
+				}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+					p.log.Error("failed to audit policy denied operation", "error", err)
 				}
+				return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
 			}
 			if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
 				if p.config.Metrics != nil {
@@ -332,7 +335,7 @@ func (p *StdioProxy) record(call pendingCall, direction string, result json.RawM
 	})
 }
 
-func (p *StdioProxy) evaluatePolicy(toolName string) policy.Decision {
+func (p *StdioProxy) evaluatePolicy(method, name string) policy.Decision {
 	if p.config.Policy == nil {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
@@ -341,14 +344,19 @@ func (p *StdioProxy) evaluatePolicy(toolName string) policy.Decision {
 		ClientID: p.config.ClientID,
 		Issuer:   "static",
 		ServerID: p.config.ServerID,
-		Method:   "tools/call",
-		Name:     toolName,
-		ToolName: toolName,
+		Method:   method,
+		Name:     name,
+		ToolName: func() string {
+			if method == "tools/call" {
+				return name
+			}
+			return ""
+		}(),
 	})
 }
 
 func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
-	if p.config.Policy == nil || p.config.Metrics == nil {
+	if p.config.Policy == nil || p.config.Metrics == nil || !decision.Applied {
 		return
 	}
 	p.config.Metrics.RecordPolicyDecision(decision.Action)

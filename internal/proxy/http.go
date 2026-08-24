@@ -20,6 +20,7 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
+	"github.com/P4ST4S/mcp-audit/internal/mcp"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 	"github.com/P4ST4S/mcp-audit/internal/retry"
@@ -412,7 +413,11 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 		if msg.Method == "" {
 			continue
 		}
-		toolName := toolNameFromParams(msg.Method, msg.Params)
+		metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
+		toolName := ""
+		if msg.Method == "tools/call" {
+			toolName = metadata.Name
+		}
 		call := pendingCall{
 			method:    msg.Method,
 			requestID: jsonRPCID(msg.ID),
@@ -421,16 +426,14 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 			startedAt: startedAt,
 			principal: auditPrincipal(principal),
 		}
-		if msg.Method == "tools/call" {
-			decision := p.evaluatePolicy(principal, msg.Method, toolName)
-			p.recordPolicyDecision(decision)
-			if !decision.Allowed {
-				rpcErr := policyError(decision)
-				if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
-					p.log.Error("failed to audit policy denied http call", "error", err)
-				}
-				return pending, buildErrorResponse(msg.ID, rpcErr)
+		decision := p.evaluatePolicy(principal, metadata.Method, metadata.Name)
+		p.recordPolicyDecision(decision)
+		if !decision.Allowed {
+			rpcErr := policyError(decision)
+			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+				p.log.Error("failed to audit policy denied http operation", "error", err)
 			}
+			return pending, buildErrorResponse(msg.ID, rpcErr)
 		}
 		if msg.Method == "tools/call" && !p.config.Limiter.Allow(principal.ClientID, toolName) {
 			if p.config.Metrics != nil {
@@ -533,6 +536,10 @@ func (p *HTTPProxy) evaluatePolicy(principal *auth.Principal, method, name strin
 	if p.config.Policy == nil {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
+	toolName := ""
+	if method == "tools/call" {
+		toolName = name
+	}
 	return p.config.Policy.Evaluate(policy.Request{
 		Subject:  principal.Subject,
 		ClientID: principal.ClientID,
@@ -542,12 +549,12 @@ func (p *HTTPProxy) evaluatePolicy(principal *auth.Principal, method, name strin
 		ServerID: p.config.ServerID,
 		Method:   method,
 		Name:     name,
-		ToolName: name,
+		ToolName: toolName,
 	})
 }
 
 func (p *HTTPProxy) recordPolicyDecision(decision policy.Decision) {
-	if p.config.Policy == nil || p.config.Metrics == nil {
+	if p.config.Policy == nil || p.config.Metrics == nil || !decision.Applied {
 		return
 	}
 	p.config.Metrics.RecordPolicyDecision(decision.Action)

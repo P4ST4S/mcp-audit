@@ -31,6 +31,16 @@ type RequestMetadata struct {
 	Kind             RequestKind
 }
 
+// MetadataFromMessage extracts operation metadata without validating HTTP headers.
+func MetadataFromMessage(message Message) RequestMetadata {
+	return RequestMetadata{
+		Method:    message.Method,
+		Name:      nameFromMessage(message),
+		RequestID: requestID(message.ID),
+		Kind:      classifyMethod(message.Method),
+	}
+}
+
 // InspectRequest validates MCP headers against a single JSON-RPC request body.
 func InspectRequest(headers http.Header, body []byte) (RequestMetadata, error) {
 	messages, err := DecodeMessages(body)
@@ -98,6 +108,7 @@ func nameFromMessage(message Message) string {
 		Name     string `json:"name"`
 		ToolName string `json:"tool_name"`
 		URI      string `json:"uri"`
+		TaskID   string `json:"taskId"`
 		Ref      struct {
 			Name string `json:"name"`
 			URI  string `json:"uri"`
@@ -114,6 +125,9 @@ func nameFromMessage(message Message) string {
 	}
 	if params.URI != "" {
 		return params.URI
+	}
+	if params.TaskID != "" {
+		return params.TaskID
 	}
 	if params.Ref.Name != "" {
 		return params.Ref.Name

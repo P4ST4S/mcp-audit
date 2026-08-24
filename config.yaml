@@ -68,6 +68,7 @@ middleware:
 policy:
   enabled: false
   default_action: allow
+  scope: all_operations
   rules:
     # - action: deny
     #   subject: alice@example.com

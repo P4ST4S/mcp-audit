@@ -238,6 +238,38 @@ func TestHTTPProxyUsesAuthenticatedPrincipalForPolicyAndAudit(t *testing.T) {
 	}
 }
 
+func TestHTTPProxyDeniesNonToolOperationWhenAllOperationsEnabled(t *testing.T) {
+	engine, err := policy.NewEngine(policy.Config{
+		Enabled: true,
+		Scope:   policy.ScopeAllOperations,
+		Rules:   []policy.Rule{{Action: policy.ActionDeny, Method: "prompts/get", Name: "restricted"}},
+	})
+	if err != nil {
+		t.Fatalf("new policy engine: %v", err)
+	}
+	store := &memoryAuditStore{}
+	proxy, err := NewHTTPProxy(HTTPConfig{
+		Upstream: "http://upstream.local",
+		Policy:   engine,
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "http"}),
+		Limiter:  middleware.NewRateLimiter(false, 0),
+	})
+	if err != nil {
+		t.Fatalf("new proxy: %v", err)
+	}
+	upstreamCalls := 0
+	proxy.client.Transport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return okJSONResponse(), nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "http://proxy.local/rpc", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"restricted"}}`))
+	rec := httptest.NewRecorder()
+	proxy.ServeHTTP(rec, req)
+	if upstreamCalls != 0 || len(store.entries) != 1 || store.entries[0].Method != "prompts/get" || store.entries[0].ToolName != "" {
+		t.Fatalf("upstream/audit = %d/%#v", upstreamCalls, store.entries)
+	}
+}
+
 func TestHTTPProxyRejectsOversizedRequestBody(t *testing.T) {
 	metrics := &httpRejectionMetrics{}
 	upstreamCalls := 0
