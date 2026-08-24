@@ -8,6 +8,8 @@ All notable changes to mcp-audit are documented in this file.
 
 - HTTP security principals with explicit local identity and optional static
   bearer authentication backed by constant-time token comparison.
+- Principal-aware policy selectors for subject, issuer, role, scope, method,
+  and operation name, plus minimal principal evidence in JSONL and SQLite.
 - HTTP proxy request-body and header limits, complete server timeouts, optional
   browser Origin validation, Host validation for DNS-rebinding protection, and
   `mcp_audit_http_request_rejections_total` metrics.

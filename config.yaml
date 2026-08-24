@@ -70,9 +70,13 @@ policy:
   default_action: allow
   rules:
     # - action: deny
-    #   client_id: claude-desktop
+    #   subject: alice@example.com
+    #   issuer: https://login.example.com
+    #   role: operator
+    #   scope: tools:delete
     #   server_id: filesystem
-    #   tool_name: delete_file
+    #   method: tools/call
+    #   name: delete_file
     #   reason: "Destructive filesystem operations are blocked"
 
 dashboard:

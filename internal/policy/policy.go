@@ -24,16 +24,28 @@ type Config struct {
 // Rule matches tool call context and returns an allow or deny decision.
 type Rule struct {
 	Action   string `mapstructure:"action"`
+	Subject  string `mapstructure:"subject"`
 	ClientID string `mapstructure:"client_id"`
+	Issuer   string `mapstructure:"issuer"`
+	Role     string `mapstructure:"role"`
+	Scope    string `mapstructure:"scope"`
 	ServerID string `mapstructure:"server_id"`
+	Method   string `mapstructure:"method"`
+	Name     string `mapstructure:"name"`
 	ToolName string `mapstructure:"tool_name"`
 	Reason   string `mapstructure:"reason"`
 }
 
 // Request is the context used to evaluate a tool call.
 type Request struct {
+	Subject  string
 	ClientID string
+	Issuer   string
+	Roles    []string
+	Scopes   []string
 	ServerID string
+	Method   string
+	Name     string
 	ToolName string
 }
 
@@ -81,8 +93,14 @@ func (e *Engine) Evaluate(request Request) Decision {
 		return Decision{Allowed: true, Action: ActionAllow, RuleIndex: -1}
 	}
 	for i, rule := range e.rules {
-		if !matches(rule.ClientID, request.ClientID) ||
+		if !matches(rule.Subject, request.Subject) ||
+			!matches(rule.ClientID, request.ClientID) ||
+			!matches(rule.Issuer, request.Issuer) ||
+			!matchesAny(rule.Role, request.Roles) ||
+			!matchesAny(rule.Scope, request.Scopes) ||
 			!matches(rule.ServerID, request.ServerID) ||
+			!matches(rule.Method, request.Method) ||
+			!matches(rule.Name, request.Name) ||
 			!matches(rule.ToolName, request.ToolName) {
 			continue
 		}
@@ -107,6 +125,19 @@ func (e *Engine) Evaluate(request Request) Decision {
 		Reason:    reason,
 		RuleIndex: -1,
 	}
+}
+
+func matchesAny(pattern string, values []string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	for _, value := range values {
+		if pattern == value {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeAction(action string) string {

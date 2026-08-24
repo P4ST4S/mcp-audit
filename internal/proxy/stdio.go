@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
@@ -312,6 +313,10 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 }
 
 func (p *StdioProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	principal := call.principal
+	if principal == nil {
+		principal = staticAuditPrincipal(p.config.ClientID)
+	}
 	return p.config.Audit.Record(audit.Entry{
 		Direction:  direction,
 		Method:     call.method,
@@ -323,6 +328,7 @@ func (p *StdioProxy) record(call pendingCall, direction string, result json.RawM
 		DurationMs: time.Since(call.startedAt).Milliseconds(),
 		ClientID:   p.config.ClientID,
 		ServerID:   p.config.ServerID,
+		Principal:  principal,
 	})
 }
 
@@ -331,8 +337,12 @@ func (p *StdioProxy) evaluatePolicy(toolName string) policy.Decision {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
 	return p.config.Policy.Evaluate(policy.Request{
+		Subject:  p.config.ClientID,
 		ClientID: p.config.ClientID,
+		Issuer:   "static",
 		ServerID: p.config.ServerID,
+		Method:   "tools/call",
+		Name:     toolName,
 		ToolName: toolName,
 	})
 }
@@ -350,6 +360,18 @@ type pendingCall struct {
 	toolName  string
 	params    json.RawMessage
 	startedAt time.Time
+	principal *audit.Principal
+}
+
+func auditPrincipal(principal *auth.Principal) *audit.Principal {
+	if principal == nil {
+		return nil
+	}
+	return &audit.Principal{Subject: principal.Subject, ClientID: principal.ClientID, Issuer: principal.Issuer}
+}
+
+func staticAuditPrincipal(clientID string) *audit.Principal {
+	return &audit.Principal{Subject: clientID, ClientID: clientID, Issuer: "static"}
 }
 
 type rpcState struct {

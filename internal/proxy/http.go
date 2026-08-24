@@ -251,7 +251,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = r.Body.Close()
 
-	pending, reject := p.observeHTTPRequest(body, startedAt)
+	pending, reject := p.observeHTTPRequest(body, startedAt, principal)
 	if reject != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -398,7 +398,7 @@ func (p *HTTPProxy) targetURL(r *http.Request) *url.URL {
 	return &target
 }
 
-func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[string]pendingCall, []byte) {
+func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principal *auth.Principal) (map[string]pendingCall, []byte) {
 	pending := make(map[string]pendingCall)
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return pending, nil
@@ -419,9 +419,10 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 			toolName:  toolName,
 			params:    msg.Params,
 			startedAt: startedAt,
+			principal: auditPrincipal(principal),
 		}
 		if msg.Method == "tools/call" {
-			decision := p.evaluatePolicy(toolName)
+			decision := p.evaluatePolicy(principal, msg.Method, toolName)
 			p.recordPolicyDecision(decision)
 			if !decision.Allowed {
 				rpcErr := policyError(decision)
@@ -431,9 +432,9 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 				return pending, buildErrorResponse(msg.ID, rpcErr)
 			}
 		}
-		if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
+		if msg.Method == "tools/call" && !p.config.Limiter.Allow(principal.ClientID, toolName) {
 			if p.config.Metrics != nil {
-				p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
+				p.config.Metrics.RecordRateLimitRejection(principal.ClientID, toolName)
 			}
 			rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
 			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
@@ -509,6 +510,10 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 }
 
 func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	principal := call.principal
+	if principal == nil {
+		principal = staticAuditPrincipal(p.config.ClientID)
+	}
 	return p.config.Audit.Record(audit.Entry{
 		Direction:  direction,
 		Method:     call.method,
@@ -518,19 +523,26 @@ func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMe
 		Result:     result,
 		Error:      rpcErr,
 		DurationMs: time.Since(call.startedAt).Milliseconds(),
-		ClientID:   p.config.ClientID,
+		ClientID:   principal.ClientID,
 		ServerID:   p.config.ServerID,
+		Principal:  principal,
 	})
 }
 
-func (p *HTTPProxy) evaluatePolicy(toolName string) policy.Decision {
+func (p *HTTPProxy) evaluatePolicy(principal *auth.Principal, method, name string) policy.Decision {
 	if p.config.Policy == nil {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
 	return p.config.Policy.Evaluate(policy.Request{
-		ClientID: p.config.ClientID,
+		Subject:  principal.Subject,
+		ClientID: principal.ClientID,
+		Issuer:   principal.Issuer,
+		Roles:    principal.Roles,
+		Scopes:   principal.Scopes,
 		ServerID: p.config.ServerID,
-		ToolName: toolName,
+		Method:   method,
+		Name:     name,
+		ToolName: name,
 	})
 }
 

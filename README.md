@@ -178,12 +178,12 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `audit.rotation.interval` | empty | Optional time-based JSONL rotation interval: `hourly` or `daily`. Empty disables time-based rotation. |
 | `audit.rotation.max_age_days` | `0` | Delete JSONL archives whose filename rotation timestamp is older than this many days. `0` disables age retention. |
 | `middleware.rate_limit.enabled` | `true` | Enable per-client, per-tool token buckets. |
-| `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
+| `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per authenticated `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
 | `middleware.redact.patterns` | sensitive keys | Case-insensitive key fragments to redact. |
 | `policy.enabled` | `false` | Enable synchronous allow/deny policy checks for `tools/call`. |
 | `policy.default_action` | `allow` | Fallback action when no policy rule matches: `allow` or `deny`. |
-| `policy.rules` | empty | Ordered first-match allow/deny rules for tool calls. |
+| `policy.rules` | empty | Ordered first-match allow/deny rules. Existing `client_id`, `server_id`, and `tool_name` selectors remain valid; optional principal selectors are `subject`, `issuer`, `role`, and `scope`, with generic operation selectors `method` and `name`. |
 | `dashboard.enabled` | `true` | Serve the dashboard. |
 | `dashboard.bind_address` | `127.0.0.1` | Dashboard listen address. Set explicitly, for example to `0.0.0.0`, only when the dashboard is protected by network controls or auth. |
 | `dashboard.port` | `9090` | Dashboard listen port. |
