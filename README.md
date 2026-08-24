@@ -93,20 +93,21 @@ To pin a specific release for reproducible installs, see
 Run in stdio mode:
 
 ```bash
-AUDIT_SECRET="$(openssl rand -hex 32)" \
+MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem /tmp"
 ```
 
 On Windows PowerShell, generate the secret and set it as an environment variable:
 
 ```powershell
-$env:AUDIT_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+$env:MCP_AUDIT_SIGNING_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 .\mcp-audit.exe --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem C:\Temp"
 ```
 
 Run in HTTP mode:
 
 ```bash
+MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport http --upstream http://localhost:8080 --port 4422
 ```
 
@@ -129,7 +130,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
 ## Configuration
 
-`mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values, and `AUDIT_SECRET` overrides `audit.secret`.
+`mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values. `MCP_AUDIT_SIGNING_SECRET` overrides `audit.secret`; the legacy `AUDIT_SECRET` name remains supported at lower precedence.
 
 For Streamable HTTP clients, the proxy forwards MCP session, cache, and
 multi-round-trip metadata unchanged. When `Mcp-Method`, `Mcp-Name`, or
@@ -185,8 +186,8 @@ body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |
 | `audit.path` | `./audit.jsonl` | JSONL audit log path. |
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
-| `audit.sign` | `true` | Enable HMAC-SHA256 signatures when a secret is set. |
-| `audit.secret` | empty | HMAC secret. Prefer `AUDIT_SECRET`. |
+| `audit.sign` | `true` | Enable HMAC-SHA256 signatures. Startup fails unless a non-blank secret is configured. |
+| `audit.secret` | empty | HMAC secret. Prefer `MCP_AUDIT_SIGNING_SECRET`. |
 | `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
@@ -304,7 +305,7 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
         "npx @modelcontextprotocol/server-filesystem /tmp"
       ],
       "env": {
-        "AUDIT_SECRET": "replace-with-a-long-random-secret"
+        "MCP_AUDIT_SIGNING_SECRET": "replace-with-a-long-random-secret"
       }
     }
   }

@@ -69,5 +69,6 @@ computed. The durable entry is therefore exactly what Integrity v2 verifies.
 v2 object. It identifies the verification key without exposing key material and
 allows a verifier to select among rotated keys in a future release.
 
-The signing secret remains configured through `AUDIT_SECRET` or the existing
-`audit.secret` setting. The environment variable takes precedence.
+The signing secret is configured through `MCP_AUDIT_SIGNING_SECRET` or the
+existing `audit.secret` setting. The legacy `AUDIT_SECRET` name remains
+supported. The preferred environment variable takes precedence over both.

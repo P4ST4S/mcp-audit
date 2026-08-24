@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,9 +13,15 @@ import (
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 )
 
+func setTestSigningSecret(t *testing.T) {
+	t.Helper()
+	t.Setenv(preferredSigningSecretEnv, "0123456789abcdef0123456789abcdef")
+}
+
 // TestLoadConfigUsesDefaultUpstreamTimeout verifies the HTTP upstream timeout
 // default is applied when neither config nor flags specify it.
 func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
+	setTestSigningSecret(t)
 	config, err := loadConfig(cliFlags{
 		config:   filepath.Join(t.TempDir(), "missing.yaml"),
 		upstream: "cat",
@@ -40,6 +47,7 @@ func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 }
 
 func TestLoadConfigReadsHTTPHardening(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   transport: http
@@ -83,6 +91,7 @@ func TestLoadConfigReadsHTTPHardening(t *testing.T) {
 // TestLoadConfigReadsUpstreamTimeout verifies config.yaml can set the HTTP
 // upstream timeout.
 func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -101,6 +110,7 @@ func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
 }
 
 func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   transport: http
@@ -162,6 +172,7 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 }
 
 func TestLoadConfigReadsDashboardBindAddressAndAuthToken(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   upstream: cat
@@ -194,6 +205,7 @@ dashboard:
 }
 
 func TestLoadConfigReadsAuditRotation(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   upstream: cat
@@ -230,6 +242,7 @@ audit:
 }
 
 func TestLoadConfigAuditRotationDefaults(t *testing.T) {
+	setTestSigningSecret(t)
 	config, err := loadConfig(cliFlags{
 		config:   filepath.Join(t.TempDir(), "missing.yaml"),
 		upstream: "cat",
@@ -261,9 +274,72 @@ func TestValidateConfigRejectsInvalidSigningKeyID(t *testing.T) {
 	}
 }
 
+func TestValidateConfigAuditSigningSecret(t *testing.T) {
+	cases := []struct {
+		name    string
+		sign    bool
+		secret  string
+		wantErr bool
+	}{
+		{name: "disabled without secret", sign: false, secret: "", wantErr: false},
+		{name: "enabled with secret", sign: true, secret: "0123456789abcdef0123456789abcdef", wantErr: false},
+		{name: "enabled without secret", sign: true, secret: "", wantErr: true},
+		{name: "enabled with whitespace", sign: true, secret: "  \t ", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			config.Audit.Sign = tc.sign
+			config.Audit.Secret = tc.secret
+			config.Audit.Signing.KeyID = "default"
+			err := validateConfig(config)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "audit signing is enabled but no signing secret is configured") {
+				t.Fatalf("validation error = %q, want clear missing-secret message", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigPreferredSigningSecretTakesPrecedence(t *testing.T) {
+	t.Setenv(legacySigningSecretEnv, "legacy-secret")
+	t.Setenv(preferredSigningSecretEnv, "preferred-secret")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\naudit:\n  secret: config-secret\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Audit.Secret != "preferred-secret" {
+		t.Fatalf("resolved secret = %q, want preferred-secret", config.Audit.Secret)
+	}
+}
+
+func TestLoadConfigEmptyPreferredSigningSecretFailsClosed(t *testing.T) {
+	t.Setenv(preferredSigningSecretEnv, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\naudit:\n  secret: config-secret\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}}); err == nil {
+		t.Fatal("expected explicit empty preferred signing secret to fail")
+	}
+}
+
 // TestLoadConfigUpstreamTimeoutFlagOverridesConfig verifies the CLI flag has
 // higher precedence than config.yaml for the HTTP upstream timeout.
 func TestLoadConfigUpstreamTimeoutFlagOverridesConfig(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -470,6 +546,7 @@ func TestValidateConfigAllowsAuthorizationForwardHeader(t *testing.T) {
 }
 
 func TestLoadConfigReadsStaticBearerAuthFromEnvironment(t *testing.T) {
+	setTestSigningSecret(t)
 	t.Setenv("MCP_AUDIT_STATIC_BEARER_TOKEN", "0123456789abcdef0123456789abcdef")
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:

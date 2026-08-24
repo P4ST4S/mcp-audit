@@ -58,6 +58,7 @@ audit:
   path: ./audit.jsonl
   sqlite_path: ./audit.db
   sign: true
+  # Required when sign is true. Prefer MCP_AUDIT_SIGNING_SECRET in production.
   secret: ""
   signing:
     key_id: "default"
