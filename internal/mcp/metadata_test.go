@@ -20,7 +20,7 @@ func TestInspectRequestClassifiesOperationFamilies(t *testing.T) {
 		{name: "completion", body: `{"jsonrpc":"2.0","id":3,"method":"completion/complete","params":{"ref":{"name":"review"}}}`, method: "completion/complete", entityName: "review", kind: RequestKindCompletion},
 		{name: "logging", body: `{"jsonrpc":"2.0","method":"logging/setLevel","params":{"level":"debug"}}`, method: "logging/setLevel", kind: RequestKindLogging},
 		{name: "discover", body: `{"jsonrpc":"2.0","id":4,"method":"server/discover"}`, method: "server/discover", kind: RequestKindDiscovery},
-		{name: "task", body: `{"jsonrpc":"2.0","id":5,"method":"tasks/get","params":{"name":"task-1"}}`, method: "tasks/get", entityName: "task-1", kind: RequestKindTasks},
+		{name: "task", body: `{"jsonrpc":"2.0","id":5,"method":"tasks/get","params":{"taskId":"task-1"}}`, method: "tasks/get", entityName: "task-1", kind: RequestKindTasks},
 		{name: "extension", body: `{"jsonrpc":"2.0","id":6,"method":"extensions/acme.run","params":{"name":"job"}}`, method: "extensions/acme.run", entityName: "job", kind: RequestKindExtensions},
 		{name: "unknown", body: `{"jsonrpc":"2.0","id":7,"method":"ping"}`, method: "ping", kind: RequestKindUnknown},
 	}

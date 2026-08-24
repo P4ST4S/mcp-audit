@@ -86,6 +86,32 @@ func TestStdioPolicyDeniesToolCallBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestStdioPolicyDeniesResourceOperation(t *testing.T) {
+	store := &memoryAuditStore{}
+	engine, err := policy.NewEngine(policy.Config{
+		Enabled: true,
+		Scope:   policy.ScopeAllOperations,
+		Rules:   []policy.Rule{{Action: policy.ActionDeny, Method: "resources/read", Name: "file:///secret"}},
+	})
+	if err != nil {
+		t.Fatalf("new policy engine: %v", err)
+	}
+	proxy := NewStdioProxy(StdioConfig{
+		Audit:    audit.NewLogger(audit.LoggerConfig{Store: store, Transport: "stdio"}),
+		Limiter:  middleware.NewRateLimiter(false, 0),
+		Policy:   engine,
+		ClientID: "local-client",
+		ServerID: "filesystem",
+	})
+	action := proxy.observeClientMessage([]byte(`{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"file:///secret"}}`))
+	if len(action.reject) == 0 || len(store.entries) != 1 {
+		t.Fatalf("reject/audit = %q/%#v", action.reject, store.entries)
+	}
+	if store.entries[0].Method != "resources/read" || store.entries[0].ToolName != "" || store.entries[0].Error == nil {
+		t.Fatalf("entry = %#v", store.entries[0])
+	}
+}
+
 type memoryAuditStore struct {
 	entries []audit.Entry
 }
