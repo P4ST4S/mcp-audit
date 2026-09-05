@@ -48,7 +48,7 @@ func TestStdioPolicyDeniesToolCallBeforeUpstream(t *testing.T) {
 		Enabled:       true,
 		DefaultAction: policy.ActionAllow,
 		Rules: []policy.Rule{
-			{Action: policy.ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
+			{ID: "SEC-014", Action: policy.ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
 		},
 	})
 	if err != nil {
@@ -86,6 +86,9 @@ func TestStdioPolicyDeniesToolCallBeforeUpstream(t *testing.T) {
 	if entry.ToolName != "delete_file" {
 		t.Fatalf("tool name = %q, want delete_file", entry.ToolName)
 	}
+	if entry.MCPName != "delete_file" || entry.Policy == nil || entry.Policy.RuleID != "SEC-014" {
+		t.Fatalf("MCP policy evidence = %#v", entry)
+	}
 	if entry.Error == nil || entry.Error.Code != policyDeniedCode {
 		t.Fatalf("entry error = %#v, want policy denial", entry.Error)
 	}
@@ -102,7 +105,7 @@ func TestStdioPolicyDeniesResourceOperation(t *testing.T) {
 	engine, err := policy.NewEngine(policy.Config{
 		Enabled: true,
 		Scope:   policy.ScopeAllOperations,
-		Rules:   []policy.Rule{{Action: policy.ActionDeny, Method: "resources/read", Name: "file:///secret"}},
+		Rules:   []policy.Rule{{ID: "RESOURCE-001", Action: policy.ActionDeny, Method: "resources/read", Name: "file:///secret"}},
 	})
 	if err != nil {
 		t.Fatalf("new policy engine: %v", err)
@@ -120,6 +123,9 @@ func TestStdioPolicyDeniesResourceOperation(t *testing.T) {
 	}
 	if store.entries[0].Method != "resources/read" || store.entries[0].ToolName != "" || store.entries[0].Error == nil {
 		t.Fatalf("entry = %#v", store.entries[0])
+	}
+	if store.entries[0].MCPName != "file:///secret" || store.entries[0].Policy == nil || store.entries[0].Policy.RuleID != "RESOURCE-001" {
+		t.Fatalf("generic MCP evidence = %#v", store.entries[0])
 	}
 }
 

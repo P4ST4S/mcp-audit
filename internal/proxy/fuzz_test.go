@@ -1,7 +1,12 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
 	"testing"
 )
 
@@ -54,3 +59,34 @@ func FuzzHTTPAccessListNormalization(f *testing.F) {
 		_ = ValidateHTTPAccessLists([]string{origin}, []string{host})
 	})
 }
+
+func FuzzSSEStream(f *testing.F) {
+	f.Add([]byte("data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n\n"))
+	f.Add([]byte("event: message\nid: 42\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"failed\"}}\n\n"))
+	f.Add([]byte("data: not-json\n\n"))
+	f.Add([]byte("data: {\"jsonrpc\":\"2.0\""))
+
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		if len(raw) > 64<<10 {
+			return
+		}
+		proxy := &HTTPProxy{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		pending := map[string]pendingCall{"1": {}}
+		proxy.streamSSE(context.Background(), &discardFuzzResponseWriter{}, bytes.NewReader(raw), pending, http.StatusOK)
+	})
+}
+
+type discardFuzzResponseWriter struct {
+	header http.Header
+}
+
+func (w *discardFuzzResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (*discardFuzzResponseWriter) Write(raw []byte) (int, error) { return len(raw), nil }
+func (*discardFuzzResponseWriter) WriteHeader(int)               {}
+func (*discardFuzzResponseWriter) Flush()                        {}
