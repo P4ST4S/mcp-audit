@@ -77,7 +77,8 @@ policy:
   default_action: allow
   scope: all_operations
   rules:
-    - action: deny
+    - id: RESOURCE-001
+      action: deny
       role: operator
       method: resources/read
       name: file:///secret
@@ -248,7 +249,8 @@ policy:
   default_action: allow
   scope: all_operations
   rules:
-    - action: deny
+    - id: RESOURCE-001
+      action: deny
       role: auditor
       method: resources/read
       name: file:///secret
@@ -288,6 +290,32 @@ metrics:
 	entries := readAuditEntries(t, auditPath)
 	if len(entries) != 1 || entries[0].Principal == nil || entries[0].Principal.Subject != "bob" || entries[0].Principal.ClientID != "oidc-client" || entries[0].Principal.Issuer != issuerURL {
 		t.Fatalf("OIDC principal audit = %#v", entries)
+	}
+	if entries[0].MCPName != "file:///secret" || entries[0].Policy == nil || entries[0].Policy.Decision != "deny" || entries[0].Policy.RuleID != "RESOURCE-001" {
+		t.Fatalf("OIDC policy evidence = %#v", entries[0])
+	}
+
+	verify := exec.Command(binaryPath, "verify", auditPath, "--json")
+	verify.Env = commandEnv(map[string]string{"MCP_AUDIT_SIGNING_SECRET": signingSecret}, "AUDIT_SECRET")
+	if output, err := verify.CombinedOutput(); err != nil {
+		t.Fatalf("verify OIDC audit artifact: %v\n%s", err, output)
+	}
+
+	entries[0].Principal.Subject = "mallory"
+	tampered, err := json.Marshal(entries[0])
+	if err != nil {
+		t.Fatalf("marshal tampered audit entry: %v", err)
+	}
+	tamperedPath := filepath.Join(t.TempDir(), "tampered.jsonl")
+	if err := os.WriteFile(tamperedPath, append(tampered, '\n'), 0o600); err != nil {
+		t.Fatalf("write tampered audit artifact: %v", err)
+	}
+	verify = exec.Command(binaryPath, "verify", tamperedPath, "--json")
+	verify.Env = commandEnv(map[string]string{"MCP_AUDIT_SIGNING_SECRET": signingSecret}, "AUDIT_SECRET")
+	output, err := verify.CombinedOutput()
+	exitError, ok := err.(*exec.ExitError)
+	if !ok || exitError.ExitCode() != 1 {
+		t.Fatalf("tampered principal verification error = %v, want exit 1\n%s", err, output)
 	}
 }
 

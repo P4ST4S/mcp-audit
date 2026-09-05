@@ -9,7 +9,10 @@ All notable changes to mcp-audit are documented in this file.
 - HTTP security principals with explicit local identity and optional static
   bearer authentication backed by constant-time token comparison.
 - Principal-aware policy selectors for subject, issuer, role, scope, method,
-  and operation name, plus minimal principal evidence in JSONL and SQLite.
+  and operation name, plus minimal principal and policy-decision evidence in
+  JSONL and SQLite.
+- Generic `mcp_name` audit evidence for tool, resource, prompt, task, and
+  extension operations while preserving `tool_name` compatibility.
 - Optional policy enforcement across all client-originated MCP operation
   families, with a compatibility-preserving `tools_only` default.
 - OIDC resource-server authentication with rotating JWKS, explicit asymmetric
@@ -28,7 +31,8 @@ All notable changes to mcp-audit are documented in this file.
 - Terminal audit `outcome` values and UUIDv7 `audit_operation_id` correlation,
   with an exactly-once operation finalizer shared by HTTP and stdio transports.
 - Additive Integrity v2 metadata using RFC 8785 JCS and HMAC-SHA256 to protect
-  the complete critical audit record while preserving legacy signatures.
+  the complete critical audit record, including the authenticated principal,
+  while preserving legacy signatures.
 - `audit.signing.key_id` for identifying the Integrity v2 verification key.
 - `mcp-audit verify` for streaming verification of Integrity v2 and legacy
   signatures in JSONL and SQLite audit artifacts, with text and JSON output.

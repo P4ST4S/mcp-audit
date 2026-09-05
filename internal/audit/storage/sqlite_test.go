@@ -388,6 +388,30 @@ func TestSQLiteStorePersistsPrincipalProjection(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsMCPNameAndPolicyEvidence(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:       "policy-1",
+		Method:   "resources/read",
+		MCPName:  "file:///restricted",
+		ClientID: "client-1",
+		ServerID: "filesystem",
+		Policy:   &audit.PolicyEvidence{Decision: "deny", RuleID: "SEC-014"},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].MCPName != "file:///restricted" || entries[0].Policy == nil {
+		t.Fatalf("MCP policy evidence did not round-trip: %#v", entries)
+	}
+	if entries[0].Policy.Decision != "deny" || entries[0].Policy.RuleID != "SEC-014" {
+		t.Fatalf("policy evidence = %#v", entries[0].Policy)
+	}
+}
+
 func TestSQLiteStorePersistsOperationLifecycle(t *testing.T) {
 	t.Parallel()
 	store := newSQLiteStore(t)

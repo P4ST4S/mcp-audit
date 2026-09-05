@@ -84,8 +84,8 @@ func TestSignerSignatureChangesWhenAnySignedFieldChanges(t *testing.T) {
 }
 
 func TestSignerSignatureIgnoresUnsignedFields(t *testing.T) {
-	// Result, Error, Direction, ClientID, ServerID, DurationMs are intentionally
-	// not part of the signature. Changing them must not affect the signature.
+	// Fields outside the legacy five-field contract are intentionally not part
+	// of the signature. Changing them must not affect the signature.
 	s := NewSigner("hunter2")
 	base := Entry{
 		ID:        "01HY8G6Y8S6W9K6ZD7VJ4Q8X4R",
@@ -103,6 +103,9 @@ func TestSignerSignatureIgnoresUnsignedFields(t *testing.T) {
 	mutated.ClientID = "other-client"
 	mutated.ServerID = "other-server"
 	mutated.DurationMs = 999
+	mutated.MCPName = "read_file"
+	mutated.Principal = &Principal{Subject: "alice", ClientID: "client", Issuer: "issuer"}
+	mutated.Policy = &PolicyEvidence{Decision: "allow", RuleID: "SEC-001"}
 
 	if s.Sign(mutated) != baseSig {
 		t.Fatal("signature changed when only unsigned fields were modified")

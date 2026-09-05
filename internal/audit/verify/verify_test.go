@@ -186,12 +186,19 @@ func baseEntry(id string) audit.Entry {
 		Transport:        "http",
 		Method:           "tools/call",
 		RequestID:        "42",
+		MCPName:          "read_file",
 		ToolName:         "read_file",
 		Params:           json.RawMessage(`{"name":"read_file","arguments":{"path":"/tmp/file"}}`),
 		Result:           json.RawMessage(`{"ok":true}`),
 		DurationMs:       17,
 		ClientID:         "client",
 		ServerID:         "server",
+		Principal: &audit.Principal{
+			Subject:  "alice",
+			ClientID: "client",
+			Issuer:   "https://issuer.example.com",
+		},
+		Policy: &audit.PolicyEvidence{Decision: "allow", RuleID: "SEC-001"},
 	}
 }
 
