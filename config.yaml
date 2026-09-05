@@ -87,7 +87,8 @@ policy:
   default_action: allow
   scope: all_operations
   rules:
-    # - action: deny
+    # - id: SEC-014
+    #   action: deny
     #   subject: alice@example.com
     #   issuer: https://login.example.com
     #   role: operator
@@ -99,6 +100,7 @@ policy:
 
 dashboard:
   enabled: true
+  bind_address: "127.0.0.1"
   port: 9090
 
 metrics:
