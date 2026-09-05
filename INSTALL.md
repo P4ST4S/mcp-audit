@@ -31,6 +31,11 @@ $version = "1.1.0"
 When `version` is set, snippets below build URLs from it. When `version` is
 unset, snippets resolve to GitHub's `latest` release.
 
+When upgrading an existing deployment to v1.2, review the
+[v1.2 migration guide](docs/V1.2_MIGRATION.md) before rollout. It covers the
+fail-closed signing requirement, explicit HTTP exposure, authentication, policy
+scope, and evidence verification.
+
 ## Prerequisites
 
 - `mcp-audit` itself has no runtime dependency when installed from a prebuilt
@@ -220,6 +225,17 @@ For release archives, download `mcp-audit_<version>_checksums.txt` from the same
 release and verify the archive before extracting it. Linux commonly uses
 `sha256sum`, macOS uses `shasum -a 256`, and Windows can use `Get-FileHash` as
 shown above.
+
+After the proxy records a representative operation, verify the audit artifact
+with the same secret used for signing:
+
+```bash
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.jsonl
+```
+
+The command also detects SQLite artifacts. Exit status `0` means every record
+is valid, `1` means at least one record is invalid or unsigned, and `2` means a
+usage or input failure.
 
 ## Troubleshooting
 
