@@ -372,6 +372,33 @@ func TestSQLiteStorePersistsRequestID(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsOperationLifecycle(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:               "operation-1",
+		AuditOperationID: "019d2f6e-47ad-75ad-b506-b7990d8c11ba",
+		Outcome:          audit.OutcomeTimeout,
+		ClientID:         "c1",
+		ServerID:         "s1",
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].AuditOperationID != "019d2f6e-47ad-75ad-b506-b7990d8c11ba" {
+		t.Fatalf("operation ID = %q", entries[0].AuditOperationID)
+	}
+	if entries[0].Outcome != audit.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want timeout", entries[0].Outcome)
+	}
+}
+
 func TestNewSQLiteStoreCreatesParentDirectory(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "sub", "dir", "audit.db")

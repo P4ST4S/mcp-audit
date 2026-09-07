@@ -45,6 +45,8 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS audit_entries (
 			id TEXT PRIMARY KEY,
 			timestamp TEXT NOT NULL,
+			audit_operation_id TEXT,
+			outcome TEXT,
 			direction TEXT NOT NULL,
 			transport TEXT NOT NULL,
 			method TEXT NOT NULL,
@@ -72,6 +74,14 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("audit: sqlite: migrate request_id: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN audit_operation_id TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate audit_operation_id: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN outcome TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate outcome: %w", err)
+	}
 	return nil
 }
 
@@ -92,9 +102,9 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
 	}
 	stmt, err := tx.Prepare(`INSERT INTO audit_entries (
-		id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
+		id, timestamp, audit_operation_id, outcome, direction, transport, method, request_id, tool_name, params, result, error,
 		duration_ms, client_id, server_id, signature
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("audit: sqlite: prepare batch: %w", err)
@@ -113,6 +123,8 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		_, err = stmt.Exec(
 			entry.ID,
 			entry.Timestamp.UTC().Format(time.RFC3339Nano),
+			entry.AuditOperationID,
+			entry.Outcome,
 			entry.Direction,
 			entry.Transport,
 			entry.Method,
@@ -139,7 +151,7 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 
 // Query returns recent entries matching filter.
 func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
-	rows, err := s.db.Query(`SELECT id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
+	rows, err := s.db.Query(`SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, request_id, tool_name, params, result, error,
 		duration_ms, client_id, server_id, signature
 		FROM audit_entries
 		ORDER BY timestamp DESC
@@ -152,10 +164,12 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 	var entries []audit.Entry
 	for rows.Next() {
 		var entry audit.Entry
-		var timestamp, params, result, rpcErr sql.NullString
+		var timestamp, operationID, outcome, params, result, rpcErr sql.NullString
 		if err := rows.Scan(
 			&entry.ID,
 			&timestamp,
+			&operationID,
+			&outcome,
 			&entry.Direction,
 			&entry.Transport,
 			&entry.Method,
@@ -176,6 +190,12 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			if err == nil {
 				entry.Timestamp = parsed
 			}
+		}
+		if operationID.Valid {
+			entry.AuditOperationID = operationID.String
+		}
+		if outcome.Valid {
+			entry.Outcome = audit.Outcome(outcome.String)
 		}
 		if params.Valid {
 			entry.Params = json.RawMessage(params.String)
