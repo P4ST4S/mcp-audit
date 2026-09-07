@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 )
 
 func newJSONLStore(t *testing.T) *JSONLStore {
@@ -83,6 +84,32 @@ func TestJSONLStoreAppendWritesEntry(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].ID != "e1" {
 		t.Fatalf("expected 1 entry with ID=e1, got %+v", entries)
+	}
+}
+
+func TestJSONLStorePersistsIntegrityMetadata(t *testing.T) {
+	t.Parallel()
+	store := newJSONLStore(t)
+
+	mustAppend(t, store, audit.Entry{
+		ID: "integrity-1",
+		Integrity: &integrity.Metadata{
+			Version:   integrity.VersionV2,
+			Algorithm: integrity.AlgorithmHMACV2,
+			KeyID:     "audit-prod",
+			Signature: "abcdef",
+		},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Integrity == nil {
+		t.Fatalf("integrity metadata did not round-trip: %#v", entries)
+	}
+	if entries[0].Integrity.KeyID != "audit-prod" {
+		t.Fatalf("key ID = %q, want audit-prod", entries[0].Integrity.KeyID)
 	}
 }
 

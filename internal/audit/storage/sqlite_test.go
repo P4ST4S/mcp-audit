@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 )
 
 func newSQLiteStore(t *testing.T) *SQLiteStore {
@@ -396,6 +397,34 @@ func TestSQLiteStorePersistsOperationLifecycle(t *testing.T) {
 	}
 	if entries[0].Outcome != audit.OutcomeTimeout {
 		t.Fatalf("outcome = %q, want timeout", entries[0].Outcome)
+	}
+}
+
+func TestSQLiteStorePersistsIntegrityMetadata(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:       "integrity-1",
+		ClientID: "c1",
+		ServerID: "s1",
+		Integrity: &integrity.Metadata{
+			Version:   integrity.VersionV2,
+			Algorithm: integrity.AlgorithmHMACV2,
+			KeyID:     "audit-prod",
+			Signature: "abcdef",
+		},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Integrity == nil {
+		t.Fatalf("integrity metadata did not round-trip: %#v", entries)
+	}
+	if entries[0].Integrity.KeyID != "audit-prod" {
+		t.Fatalf("key ID = %q, want audit-prod", entries[0].Integrity.KeyID)
 	}
 }
 

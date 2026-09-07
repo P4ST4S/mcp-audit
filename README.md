@@ -153,6 +153,7 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
 | `audit.sign` | `true` | Enable HMAC-SHA256 signatures when a secret is set. |
 | `audit.secret` | empty | HMAC secret. Prefer `AUDIT_SECRET`. |
+| `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |

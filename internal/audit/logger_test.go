@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 )
 
 // fakeStore is an in-memory Store used to capture appended entries.
@@ -272,6 +274,56 @@ func TestLoggerRecordSignsAfterRedaction(t *testing.T) {
 	})
 	if stored.Signature != expected {
 		t.Fatalf("signature does not match redacted entry signature\nstored:   %s\nexpected: %s", stored.Signature, expected)
+	}
+}
+
+func TestLoggerRecordAddsIntegrityV2AfterRedaction(t *testing.T) {
+	store := newFakeStore()
+	redactor := &fakeRedactor{}
+	integritySigner := integrity.NewSigner("integrity test secret", "audit-prod")
+	logger := NewLogger(LoggerConfig{
+		Store:           store,
+		Redactor:        redactor,
+		IntegritySigner: integritySigner,
+		Transport:       "http",
+		ClientID:        "client",
+		ServerID:        "server",
+	})
+
+	if err := logger.Record(Entry{
+		ID:        "fixed-id",
+		Timestamp: time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC),
+		Method:    "tools/call",
+		Params:    json.RawMessage(`{"token":"raw"}`),
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	stored := store.entries[0]
+	if stored.Integrity == nil {
+		t.Fatal("expected Integrity v2 metadata")
+	}
+	if stored.Integrity.KeyID != "audit-prod" {
+		t.Fatalf("key ID = %q, want audit-prod", stored.Integrity.KeyID)
+	}
+	verifier := integrity.NewVerifier(map[string]string{"audit-prod": "integrity test secret"})
+	if err := verifier.Verify(IntegrityEntryV2(stored), stored.Integrity); err != nil {
+		t.Fatalf("verify stored entry: %v", err)
+	}
+}
+
+func TestLoggerRecordDoesNotPersistUncanonicalizableIntegrityEntry(t *testing.T) {
+	store := newFakeStore()
+	logger := NewLogger(LoggerConfig{
+		Store:           store,
+		IntegritySigner: integrity.NewSigner("integrity test secret", "default"),
+	})
+
+	err := logger.Record(Entry{Method: "tools/call", Params: json.RawMessage(`{"x":1,"x":2}`)})
+	if err == nil {
+		t.Fatal("expected duplicate JSON key to fail canonicalization")
+	}
+	if len(store.entries) != 0 {
+		t.Fatalf("stored entries = %d, want 0", len(store.entries))
 	}
 }
 

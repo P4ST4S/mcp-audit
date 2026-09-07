@@ -197,6 +197,19 @@ func TestLoadConfigAuditRotationDefaults(t *testing.T) {
 	if config.Audit.Rotation.MaxAgeDays != 0 {
 		t.Fatalf("max_age_days = %d, want 0", config.Audit.Rotation.MaxAgeDays)
 	}
+	if config.Audit.Signing.KeyID != "default" {
+		t.Fatalf("signing key ID = %q, want default", config.Audit.Signing.KeyID)
+	}
+}
+
+func TestValidateConfigRejectsInvalidSigningKeyID(t *testing.T) {
+	config := minimalValidConfig()
+	config.Audit.Sign = true
+	config.Audit.Signing.KeyID = "invalid key"
+
+	if err := validateConfig(config); err == nil {
+		t.Fatal("expected invalid signing key ID error, got nil")
+	}
 }
 
 // TestLoadConfigUpstreamTimeoutFlagOverridesConfig verifies the CLI flag has
