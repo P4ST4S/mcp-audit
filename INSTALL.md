@@ -38,8 +38,8 @@ unset, snippets resolve to GitHub's `latest` release.
 - The stdio examples often launch an upstream MCP server via `npx`, which
   requires [Node.js](https://nodejs.org/) 18+ on `PATH`. This is only needed
   for that example upstream, not for `mcp-audit`.
-- `AUDIT_SECRET` is recommended when signing audit entries. Prefer setting it
-  through the environment instead of storing secrets in config files.
+- `MCP_AUDIT_SIGNING_SECRET` is required when `audit.sign` is enabled and no
+  secret is stored in config. Prefer the environment over config files.
 
 ## Linux
 
@@ -171,7 +171,7 @@ container restarts.
 
 ```bash
 docker run --rm \
-  -e AUDIT_SECRET=change-me \
+  -e MCP_AUDIT_SIGNING_SECRET=change-me \
   -v "$PWD/audit-data:/data" \
   ghcr.io/p4st4s/mcp-audit:${VERSION:-latest} \
   --version
@@ -232,22 +232,25 @@ Prometheus metrics use `9091`.
 mcp-audit --transport http --upstream http://localhost:8080 --port 4423
 ```
 
-### `AUDIT_SECRET` missing
+### Signing secret missing
 
-Unsigned audit entries are possible, but production deployments should set
-`AUDIT_SECRET` so audit rows can be signed. Keep the value outside config files:
+When `audit.sign` is `true`, the process refuses to start without a non-blank
+secret. Keep the value outside config files:
 
 ```bash
-export AUDIT_SECRET="$(openssl rand -hex 32)"
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
 ```
 
 On PowerShell:
 
 ```powershell
-$env:AUDIT_SECRET = -join (
+$env:MCP_AUDIT_SIGNING_SECRET = -join (
   (1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) }
 )
 ```
+
+The legacy `AUDIT_SECRET` environment variable remains supported. If both are
+set, `MCP_AUDIT_SIGNING_SECRET` takes precedence.
 
 ### Upstream not reachable
 
