@@ -30,6 +30,9 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - Existing flags keep their meaning and accepted values.
 - New flags are additive.
 - The `--version` output format is documented and stable: `mcp-audit <version> (commit <sha>, built <iso8601>)`.
+- The `verify` command accepts JSONL and SQLite audit artifacts. Its text counter
+  names, JSON result fields, and exit statuses (`0` verified, `1` invalid or
+  unsigned evidence, `2` usage or input failure) are stable.
 
 ### Audit entry JSON schema
 
