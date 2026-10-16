@@ -199,7 +199,7 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 
 // Query returns recent entries matching filter.
 func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
-	rows, err := s.db.Query(`SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, request_id, mcp_name, tool_name, params, result, error,
+	rows, err := s.db.Query(`SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, COALESCE(request_id, ''), COALESCE(mcp_name, ''), tool_name, params, result, error,
 		duration_ms, client_id, server_id, principal, policy, signature, integrity
 		FROM audit_entries
 		ORDER BY timestamp DESC
