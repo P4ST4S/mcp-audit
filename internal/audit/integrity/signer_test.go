@@ -16,6 +16,7 @@ func baseEntryV2() EntryV2 {
 		Transport:        "http",
 		Method:           "tools/call",
 		RequestID:        "42",
+		MCPName:          "read_file",
 		ToolName:         "read_file",
 		Params:           json.RawMessage(`{"path":"/tmp","options":{"follow":false,"limit":10}}`),
 		Result:           json.RawMessage(`{"content":"ok"}`),
@@ -27,6 +28,15 @@ func baseEntryV2() EntryV2 {
 		DurationMS: 27,
 		ClientID:   "claude-desktop",
 		ServerID:   "filesystem",
+		Principal: &PrincipalV2{
+			Subject:  "alice",
+			ClientID: "client-42",
+			Issuer:   "https://issuer.example.com",
+		},
+		Policy: &PolicyV2{
+			Decision: "allow",
+			RuleID:   "SEC-001",
+		},
 	}
 }
 
@@ -38,6 +48,14 @@ func cloneEntryV2(entry EntryV2) EntryV2 {
 		errCopy := *entry.Error
 		errCopy.Data = append(json.RawMessage(nil), entry.Error.Data...)
 		cloned.Error = &errCopy
+	}
+	if entry.Principal != nil {
+		principalCopy := *entry.Principal
+		cloned.Principal = &principalCopy
+	}
+	if entry.Policy != nil {
+		policyCopy := *entry.Policy
+		cloned.Policy = &policyCopy
 	}
 	return cloned
 }
@@ -63,6 +81,7 @@ func TestSignerProtectsEveryV2Field(t *testing.T) {
 		{"transport", func(entry *EntryV2) { entry.Transport = "stdio" }},
 		{"method", func(entry *EntryV2) { entry.Method = "resources/read" }},
 		{"request ID", func(entry *EntryV2) { entry.RequestID = "43" }},
+		{"MCP name", func(entry *EntryV2) { entry.MCPName = "write_file" }},
 		{"tool name", func(entry *EntryV2) { entry.ToolName = "write_file" }},
 		{"params", func(entry *EntryV2) { entry.Params = json.RawMessage(`{"path":"/etc"}`) }},
 		{"result", func(entry *EntryV2) { entry.Result = json.RawMessage(`{"content":"changed"}`) }},
@@ -72,6 +91,13 @@ func TestSignerProtectsEveryV2Field(t *testing.T) {
 		{"duration", func(entry *EntryV2) { entry.DurationMS++ }},
 		{"client ID", func(entry *EntryV2) { entry.ClientID = "other-client" }},
 		{"server ID", func(entry *EntryV2) { entry.ServerID = "other-server" }},
+		{"principal subject", func(entry *EntryV2) { entry.Principal.Subject = "mallory" }},
+		{"principal client ID", func(entry *EntryV2) { entry.Principal.ClientID = "other-client" }},
+		{"principal issuer", func(entry *EntryV2) { entry.Principal.Issuer = "https://other.example.com" }},
+		{"principal presence", func(entry *EntryV2) { entry.Principal = nil }},
+		{"policy decision", func(entry *EntryV2) { entry.Policy.Decision = "deny" }},
+		{"policy rule ID", func(entry *EntryV2) { entry.Policy.RuleID = "SEC-002" }},
+		{"policy presence", func(entry *EntryV2) { entry.Policy = nil }},
 	}
 
 	for _, tc := range cases {

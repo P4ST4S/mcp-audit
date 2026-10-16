@@ -28,6 +28,7 @@ type Config struct {
 
 // Rule matches principal and MCP operation context and returns a decision.
 type Rule struct {
+	ID       string `mapstructure:"id"`
 	Action   string `mapstructure:"action"`
 	Subject  string `mapstructure:"subject"`
 	ClientID string `mapstructure:"client_id"`
@@ -61,6 +62,7 @@ type Decision struct {
 	Action    string
 	Reason    string
 	RuleIndex int
+	RuleID    string
 }
 
 // Engine evaluates deterministic allow/deny rules for MCP operations.
@@ -89,6 +91,7 @@ func NewEngine(config Config) (*Engine, error) {
 	}
 	rules := append([]Rule(nil), config.Rules...)
 	for i := range rules {
+		rules[i].ID = strings.TrimSpace(rules[i].ID)
 		rules[i].Action = normalizeAction(rules[i].Action)
 		if rules[i].Action != ActionAllow && rules[i].Action != ActionDeny {
 			return nil, fmt.Errorf("policy: rules[%d].action must be allow or deny", i)
@@ -137,6 +140,7 @@ func (e *Engine) Evaluate(request Request) Decision {
 			Action:    rule.Action,
 			Reason:    reason,
 			RuleIndex: i,
+			RuleID:    rule.ID,
 		}
 	}
 	reason := ""

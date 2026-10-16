@@ -65,6 +65,12 @@ type Principal struct {
 	Issuer   string `json:"issuer"`
 }
 
+// PolicyEvidence identifies the authorization decision applied to an operation.
+type PolicyEvidence struct {
+	Decision string `json:"decision"`
+	RuleID   string `json:"rule_id,omitempty"`
+}
+
 // Entry is a single audited JSON-RPC exchange or message.
 type Entry struct {
 	ID               string              `json:"id"`
@@ -75,6 +81,7 @@ type Entry struct {
 	Transport        string              `json:"transport"`
 	Method           string              `json:"method"`
 	RequestID        string              `json:"request_id,omitempty"`
+	MCPName          string              `json:"mcp_name,omitempty"`
 	ToolName         string              `json:"tool_name,omitempty"`
 	Params           json.RawMessage     `json:"params,omitempty"`
 	Result           json.RawMessage     `json:"result,omitempty"`
@@ -83,6 +90,7 @@ type Entry struct {
 	ClientID         string              `json:"client_id"`
 	ServerID         string              `json:"server_id"`
 	Principal        *Principal          `json:"principal,omitempty"`
+	Policy           *PolicyEvidence     `json:"policy,omitempty"`
 	Signature        string              `json:"signature"`
 	Integrity        *integrity.Metadata `json:"integrity,omitempty"`
 }
@@ -217,6 +225,21 @@ func IntegrityEntryV2(entry Entry) integrity.EntryV2 {
 			Data:    append(json.RawMessage(nil), entry.Error.Data...),
 		}
 	}
+	var principal *integrity.PrincipalV2
+	if entry.Principal != nil {
+		principal = &integrity.PrincipalV2{
+			Subject:  entry.Principal.Subject,
+			ClientID: entry.Principal.ClientID,
+			Issuer:   entry.Principal.Issuer,
+		}
+	}
+	var policyEvidence *integrity.PolicyV2
+	if entry.Policy != nil {
+		policyEvidence = &integrity.PolicyV2{
+			Decision: entry.Policy.Decision,
+			RuleID:   entry.Policy.RuleID,
+		}
+	}
 	return integrity.EntryV2{
 		ID:               entry.ID,
 		Timestamp:        entry.Timestamp.UTC().Format(time.RFC3339Nano),
@@ -226,6 +249,7 @@ func IntegrityEntryV2(entry Entry) integrity.EntryV2 {
 		Transport:        entry.Transport,
 		Method:           entry.Method,
 		RequestID:        entry.RequestID,
+		MCPName:          entry.MCPName,
 		ToolName:         entry.ToolName,
 		Params:           append(json.RawMessage(nil), entry.Params...),
 		Result:           append(json.RawMessage(nil), entry.Result...),
@@ -233,6 +257,8 @@ func IntegrityEntryV2(entry Entry) integrity.EntryV2 {
 		DurationMS:       entry.DurationMs,
 		ClientID:         entry.ClientID,
 		ServerID:         entry.ServerID,
+		Principal:        principal,
+		Policy:           policyEvidence,
 	}
 }
 

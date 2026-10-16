@@ -8,7 +8,7 @@ func TestEngineReturnsFirstMatchingRule(t *testing.T) {
 		DefaultAction: ActionAllow,
 		Rules: []Rule{
 			{Action: ActionAllow, ClientID: "other", ToolName: "delete_file"},
-			{Action: ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
+			{ID: "SEC-014", Action: ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
 		},
 	})
 	if err != nil {
@@ -26,6 +26,9 @@ func TestEngineReturnsFirstMatchingRule(t *testing.T) {
 	}
 	if decision.RuleIndex != 1 {
 		t.Fatalf("rule index = %d, want 1", decision.RuleIndex)
+	}
+	if decision.RuleID != "SEC-014" {
+		t.Fatalf("rule ID = %q, want SEC-014", decision.RuleID)
 	}
 	if decision.Reason != "destructive tool blocked" {
 		t.Fatalf("reason = %q", decision.Reason)

@@ -47,6 +47,7 @@ direction
 transport
 method
 request_id
+mcp_name
 tool_name
 params
 result
@@ -54,6 +55,8 @@ error
 duration_ms
 client_id
 server_id
+principal
+policy
 ```
 
 The legacy `signature` and the `integrity` metadata are not part of the signed

@@ -581,6 +581,32 @@ metrics:
 	}
 }
 
+func TestLoadConfigReadsPolicyRuleID(t *testing.T) {
+	setTestSigningSecret(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  upstream: cat
+policy:
+  enabled: true
+  scope: all_operations
+  rules:
+    - id: SEC-014
+      action: deny
+      method: resources/read
+      name: file:///restricted
+`)
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.Policy.Rules) != 1 || config.Policy.Rules[0].ID != "SEC-014" {
+		t.Fatalf("policy rules = %#v", config.Policy.Rules)
+	}
+}
+
 func TestValidateConfigRejectsInvalidAuth(t *testing.T) {
 	cases := []struct {
 		name      string
