@@ -21,7 +21,7 @@ Type "go build -ldflags='-X main.version=v0.9.0' -o mcp-audit ./cmd/mcp-audit &&
 Enter
 Sleep 4s
 
-Type "export AUDIT_SECRET=$(openssl rand -hex 32)"
+Type "export MCP_AUDIT_SIGNING_SECRET=$(openssl rand -hex 32)"
 Enter
 Sleep 500ms
 

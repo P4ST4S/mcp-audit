@@ -63,6 +63,10 @@ All notable changes to mcp-audit are documented in this file.
 
 ### Fixed
 
+- Synchronize v1.2.0 package metadata, installation and client examples, and
+  include migration and integrity documentation in release archives.
+- Correct the observability example's audit volume and dashboard container
+  binding, and publish its local service ports only on loopback.
 - Preserve access to legacy SQLite audit rows after migration when optional
   request ID or MCP name columns contain NULL.
 - Reject malformed bracketed and IPv6 values, plus hostnames with repeated

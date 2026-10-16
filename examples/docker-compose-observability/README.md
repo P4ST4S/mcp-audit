@@ -2,6 +2,9 @@
 
 Brings up `mcp-audit`, Prometheus, and Grafana with a single command.
 
+This example targets v1.2.0 and builds the repository checkout. Run the commands
+below from `examples/docker-compose-observability/`.
+
 ## Services
 
 | Service | Description | URL |
@@ -14,6 +17,7 @@ Brings up `mcp-audit`, Prometheus, and Grafana with a single command.
 ## Start
 
 ```bash
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
 docker compose up --build
 ```
 
@@ -36,6 +40,12 @@ docker compose down   # tear down when done
 ## Notes
 
 - Point any HTTP MCP client at `http://localhost:4422/mcp` to start generating real audit traffic.
-- Replace `AUDIT_SECRET` in `docker-compose.yml` with a long random value: `openssl rand -hex 32`.
+- Signing requires `MCP_AUDIT_SIGNING_SECRET` in the environment; Compose refuses
+  to start without it. Keep the same secret to verify existing audit records.
+- Services are published on host loopback. The dashboard binds to `0.0.0.0`
+  inside its container so Docker can route the published port to it.
 - Grafana anonymous access is enabled for convenience. Remove `GF_AUTH_ANONYMOUS_ENABLED` for production use.
-- Audit log and database are written to `./audit-data/` on the host via a bind mount.
+- Audit output is retained in the `audit-data` Docker volume at `/data`.
+  Export the JSONL artifact with
+  `docker compose cp mcp-audit:/data/audit.jsonl ./audit.jsonl`.
+  `docker compose down` preserves the volume; adding `-v` deletes it.

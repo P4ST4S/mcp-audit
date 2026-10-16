@@ -3,12 +3,15 @@
 This example uses VS Code's `stdio` MCP transport to start `mcp-audit`, then
 lets `mcp-audit` launch the real upstream MCP server.
 
+Use v1.2.0 or newer. On Windows, run this stdio example inside WSL; see
+[installation prerequisites](../../INSTALL.md#prerequisites).
+
 ## Setup
 
 1. Install `mcp-audit` on your `PATH` ([releases](https://github.com/P4ST4S/mcp-audit/releases)).
 2. Edit `examples/vscode/config.yaml` and set `proxy.upstream` to your MCP server command.
 3. Replace `/path/to/allowed/root` with a real directory if you use the filesystem server.
-4. Set `AUDIT_SECRET` to a long random value (see below).
+4. Set `MCP_AUDIT_SIGNING_SECRET` to a long random value (see below).
 
 ## Workspace-level VS Code config
 
@@ -22,7 +25,7 @@ Create `.vscode/mcp.json` in your project root:
       "command": "mcp-audit",
       "args": ["--config", "examples/vscode/config.yaml"],
       "env": {
-        "AUDIT_SECRET": "replace-with-a-long-random-secret"
+        "MCP_AUDIT_SIGNING_SECRET": "replace-with-a-long-random-secret"
       }
     }
   }
@@ -42,16 +45,16 @@ Add the same `servers` entry to your user MCP config:
 | Linux | `~/.config/Code/User/mcp.json` |
 | Windows | `%APPDATA%\Code\User\mcp.json` |
 
-## Generate `AUDIT_SECRET`
+## Generate `MCP_AUDIT_SIGNING_SECRET`
 
 ```bash
-export AUDIT_SECRET="$(openssl rand -hex 32)"
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
 ```
 
 On Windows PowerShell:
 
 ```powershell
-$env:AUDIT_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+$env:MCP_AUDIT_SIGNING_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 ```
 
 Use the same value in your VS Code `env` block (or export it in the shell that

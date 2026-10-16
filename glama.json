@@ -7,15 +7,21 @@
     "schema": {
       "type": "object",
       "properties": {
+        "MCP_AUDIT_SIGNING_SECRET": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Preferred HMAC-SHA256 signing secret, required when audit.sign is enabled"
+        },
         "AUDIT_SECRET": {
           "type": "string",
           "minLength": 1,
-          "description": "Optional HMAC-SHA256 signing secret for audit entries"
+          "description": "Legacy fallback for MCP_AUDIT_SIGNING_SECRET"
         }
       },
       "additionalProperties": false
     },
     "placeholderArguments": [
+      "MCP_AUDIT_SIGNING_SECRET",
       "AUDIT_SECRET"
     ]
   }

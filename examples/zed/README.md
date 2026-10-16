@@ -3,12 +3,15 @@
 This example uses Zed's `stdio` MCP transport to start `mcp-audit`, then lets
 `mcp-audit` launch the real upstream MCP server.
 
+Use v1.2.0 or newer. On Windows, run this stdio example inside WSL; see
+[installation prerequisites](../../INSTALL.md#prerequisites).
+
 ## Setup
 
 1. Install `mcp-audit` on your `PATH` ([releases](https://github.com/P4ST4S/mcp-audit/releases)).
 2. Edit `examples/zed/config.yaml` and set `proxy.upstream` to your MCP server command.
 3. Replace `/path/to/allowed/root` with a real directory if you use the filesystem server.
-4. Set `AUDIT_SECRET` to a long random value (see below).
+4. Set `MCP_AUDIT_SIGNING_SECRET` to a long random value (see below).
 
 ## Zed settings
 
@@ -26,7 +29,7 @@ Open your Zed settings file and add a `context_servers` entry:
       "command": "mcp-audit",
       "args": ["--config", "examples/zed/config.yaml"],
       "env": {
-        "AUDIT_SECRET": "replace-with-a-long-random-secret"
+        "MCP_AUDIT_SIGNING_SECRET": "replace-with-a-long-random-secret"
       }
     }
   }
@@ -37,16 +40,16 @@ Use a path to `config.yaml` that is correct from the workspace where Zed starts
 the context server. If you copy the example elsewhere, update the `--config`
 argument accordingly.
 
-## Generate `AUDIT_SECRET`
+## Generate `MCP_AUDIT_SIGNING_SECRET`
 
 ```bash
-export AUDIT_SECRET="$(openssl rand -hex 32)"
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
 ```
 
 On Windows PowerShell:
 
 ```powershell
-$env:AUDIT_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+$env:MCP_AUDIT_SIGNING_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 ```
 
 Use the same value in your Zed `env` block, or export it in the environment that
