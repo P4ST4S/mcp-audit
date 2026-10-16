@@ -2,7 +2,7 @@ module github.com/P4ST4S/mcp-audit
 
 go 1.22
 
-toolchain go1.26.4
+toolchain go1.26.9
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.6.2

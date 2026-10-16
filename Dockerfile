@@ -1,4 +1,4 @@
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26.9-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/mcp-audit ./cmd/mcp-audit
 
-FROM alpine:3.20
+FROM alpine:3.24
 LABEL org.opencontainers.image.title="mcp-audit" \
       org.opencontainers.image.description="Security and observability proxy for MCP servers" \
       org.opencontainers.image.source="https://github.com/P4ST4S/mcp-audit" \

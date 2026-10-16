@@ -4,6 +4,8 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-16
+
 ### Added
 
 - HTTP security principals with explicit local identity and optional static
@@ -55,7 +57,8 @@ All notable changes to mcp-audit are documented in this file.
   set to `true` requires a non-blank secret before any service or upstream
   process starts. `MCP_AUDIT_SIGNING_SECRET` is the preferred environment
   variable; legacy `AUDIT_SECRET` remains supported.
-- Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.4`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+- Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.9`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+- Align Docker builds with Go 1.26.9 and use the supported Alpine 3.24 runtime.
 - Install snippets in `README.md` and `INSTALL.md` now resolve to the latest GitHub Release dynamically. To pin a specific release, set the `version` shell variable before running snippets. See `INSTALL.md` "Choosing a version".
 
 ### Fixed
@@ -228,7 +231,9 @@ Without this setting, authenticated upstreams may return `401 Unauthorized`; `mc
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...v0.8.0
