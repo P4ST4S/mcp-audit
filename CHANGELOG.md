@@ -43,6 +43,8 @@ All notable changes to mcp-audit are documented in this file.
   malformed and incomplete responses, SSE failures, cancellations, and client
   disconnects. HTTP notifications are finalized only after the upstream result.
 - Security invariants and release gates for v1.2.0.
+- A v1.2 migration guide covering signing, network exposure, HTTP
+  authentication, policy scope, TLS, MCP metadata, and evidence verification.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
 - Claude Desktop stdio configuration example under `examples/claude-desktop/`.
