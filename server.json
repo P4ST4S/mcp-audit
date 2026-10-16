@@ -1,25 +1,25 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.P4ST4S/mcp-audit",
-  "description": "Transparent Go proxy that audits all MCP tool calls — signed, redacted, zero config.",
+  "description": "MCP security proxy with signed audit trails, redaction, authentication, and policy enforcement.",
   "repository": {
     "url": "https://github.com/P4ST4S/mcp-audit",
     "source": "github"
   },
-  "version": "0.1.0",
+  "version": "1.2.0",
   "packages": [
     {
       "registryType": "other",
       "identifier": "github.com/P4ST4S/mcp-audit",
-      "version": "v0.0.0-20260524133115-ef7d5f19e26d",
+      "version": "v1.2.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
-          "name": "AUDIT_SECRET",
-          "description": "HMAC-SHA256 signing secret for audit entries",
-          "isRequired": false,
+          "name": "MCP_AUDIT_SIGNING_SECRET",
+          "description": "HMAC-SHA256 signing secret, required when audit.sign is enabled",
+          "isRequired": true,
           "isSecret": true,
           "format": "string"
         }

@@ -19,13 +19,13 @@ release for reproducible installs, set the `version` shell variable before
 running any snippet:
 
 ```bash
-version=1.1.0
+version=1.2.0
 ```
 
 On PowerShell:
 
 ```powershell
-$version = "1.1.0"
+$version = "1.2.0"
 ```
 
 When `version` is set, snippets below build URLs from it. When `version` is
@@ -45,6 +45,8 @@ scope, and evidence verification.
   for that example upstream, not for `mcp-audit`.
 - `MCP_AUDIT_SIGNING_SECRET` is required when `audit.sign` is enabled and no
   secret is stored in config. Prefer the environment over config files.
+- Stdio upstream commands run through `/bin/sh`. On Windows, use WSL for stdio
+  examples; the native Windows binary can run the HTTP proxy.
 
 ## Linux
 
@@ -188,11 +190,12 @@ pinned container image.
 For a local HTTP proxy with the example stack, use Docker Compose:
 
 ```bash
-docker compose up --build
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
+docker compose -f examples/docker-compose-observability/docker-compose.yml up --build
 ```
 
-The compose file starts `mcp-audit` and a sample filesystem MCP server. The
-dashboard is available at `http://127.0.0.1:9090` by default, and Prometheus
+The compose file starts `mcp-audit`, a mock HTTP MCP server, Prometheus, and
+Grafana. The dashboard is available at `http://127.0.0.1:9090`, and Prometheus
 metrics are available at `http://localhost:9091/metrics`.
 
 ## From source

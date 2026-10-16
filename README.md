@@ -58,6 +58,9 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 For detailed platform-specific instructions and troubleshooting, see
 [INSTALL.md](INSTALL.md).
 
+The current release is **v1.2.0**. See the [changelog](CHANGELOG.md#120---2026-10-16)
+and [migration guide](docs/V1.2_MIGRATION.md) before upgrading.
+
 Download the latest prebuilt binary and run:
 
 ```bash
@@ -97,11 +100,12 @@ MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem /tmp"
 ```
 
-On Windows PowerShell, generate the secret and set it as an environment variable:
+For the native Windows binary, use HTTP mode. Stdio upstreams require `/bin/sh`;
+run the stdio examples inside WSL. On Windows PowerShell:
 
 ```powershell
 $env:MCP_AUDIT_SIGNING_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
-.\mcp-audit.exe --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem C:\Temp"
+.\mcp-audit.exe --transport http --upstream http://localhost:8080 --port 4422
 ```
 
 Run in HTTP mode:
@@ -114,7 +118,8 @@ mcp-audit --transport http --upstream http://localhost:8080 --port 4422
 Run with Docker Compose:
 
 ```bash
-docker compose up --build
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
+docker compose -f examples/docker-compose-observability/docker-compose.yml up --build
 ```
 
 The dashboard is available at `http://127.0.0.1:9090` by default.

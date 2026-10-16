@@ -32,20 +32,21 @@ services:
       - --storage
       - jsonl
     environment:
-      AUDIT_SECRET: replace-with-a-long-random-secret
+      MCP_AUDIT_SIGNING_SECRET: ${MCP_AUDIT_SIGNING_SECRET:?Set MCP_AUDIT_SIGNING_SECRET before starting Compose}
+      DASHBOARD_BIND_ADDRESS: 0.0.0.0
     ports:
-      - "4422:4422"
-      - "9090:9090"
-      - "9091:9091"
+      - "127.0.0.1:4422:4422"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:9091:9091"
     volumes:
-      - ./audit-data:/app
+      - audit-data:/data
     depends_on:
       - mock-mcp
 
   prometheus:
     image: prom/prometheus:latest
     ports:
-      - "9092:9090"
+      - "127.0.0.1:9092:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     depends_on:
@@ -54,7 +55,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
@@ -62,3 +63,6 @@ services:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
+
+volumes:
+  audit-data:

@@ -43,6 +43,12 @@ archives:
       - LICENSE
       - README.md
       - SECURITY.md
+      - INSTALL.md
+      - CHANGELOG.md
+      - STABILITY.md
+      - ARCHITECTURE.md
+      - CONTRIBUTING.md
+      - docs/*.md
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
