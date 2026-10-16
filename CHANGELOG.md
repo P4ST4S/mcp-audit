@@ -60,6 +60,8 @@ All notable changes to mcp-audit are documented in this file.
 
 ### Fixed
 
+- Preserve access to legacy SQLite audit rows after migration when optional
+  request ID or MCP name columns contain NULL.
 - Reject malformed bracketed and IPv6 values, plus hostnames with repeated
   trailing dots, in HTTP Origin and Host allowlists.
 

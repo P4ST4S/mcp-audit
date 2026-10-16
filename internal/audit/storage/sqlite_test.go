@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -334,6 +335,66 @@ func TestSQLiteStoreInitMigratesRequestIDColumn(t *testing.T) {
 		t.Fatalf("NewSQLiteStore reopen (idempotent init): %v", err)
 	}
 	defer store2.Close()
+}
+
+func TestSQLiteStoreQueriesMigratedLegacyRows(t *testing.T) {
+	t.Parallel()
+	for _, withRequestID := range []bool{false, true} {
+		t.Run(fmt.Sprintf("request_id=%t", withRequestID), func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "audit.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			_, err = db.Exec(`CREATE TABLE audit_entries (
+				id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, direction TEXT NOT NULL,
+				transport TEXT NOT NULL, method TEXT NOT NULL, tool_name TEXT,
+				params TEXT, result TEXT, error TEXT, duration_ms INTEGER NOT NULL,
+				client_id TEXT NOT NULL, server_id TEXT NOT NULL, signature TEXT
+			)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withRequestID {
+				if _, err := db.Exec(`ALTER TABLE audit_entries ADD COLUMN request_id TEXT`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = db.Exec(`INSERT INTO audit_entries
+				(id, timestamp, direction, transport, method, tool_name, duration_ms, client_id, server_id, signature)
+				VALUES ('legacy', '2026-06-11T12:00:00Z', 'client→server', 'stdio', 'tools/call', 'echo', 1, 'c1', 's1', 'legacy-signature')`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRequestID := ""
+			if withRequestID {
+				wantRequestID = "rpc-legacy"
+				if _, err := db.Exec(`UPDATE audit_entries SET request_id = ?`, wantRequestID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewSQLiteStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			entries, err := store.Query(audit.QueryFilter{})
+			if err != nil {
+				t.Fatalf("Query migrated rows: %v", err)
+			}
+			if len(entries) != 1 || entries[0].ID != "legacy" || entries[0].ToolName != "echo" || entries[0].Signature != "legacy-signature" {
+				t.Fatalf("legacy evidence changed: %+v", entries)
+			}
+			if entries[0].MCPName != "" || entries[0].RequestID != wantRequestID {
+				t.Fatalf("unexpected migrated fields: %+v", entries[0])
+			}
+		})
+	}
 }
 
 func TestSQLiteStoreInitIdempotent(t *testing.T) {
