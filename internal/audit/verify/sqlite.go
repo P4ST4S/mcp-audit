@@ -16,8 +16,8 @@ import (
 
 var sqliteEntryColumns = []string{
 	"id", "timestamp", "audit_operation_id", "outcome", "direction", "transport", "method",
-	"request_id", "tool_name", "params", "result", "error", "duration_ms", "client_id", "server_id",
-	"signature", "integrity",
+	"request_id", "mcp_name", "tool_name", "params", "result", "error", "duration_ms", "client_id", "server_id",
+	"principal", "policy", "signature", "integrity",
 }
 
 func verifySQLitePath(path string, verifier entryVerifier) (Result, error) {
@@ -131,6 +131,7 @@ func scanSQLiteEntry(rows *sql.Rows) (audit.Entry, error) {
 		Transport:        value("transport"),
 		Method:           value("method"),
 		RequestID:        value("request_id"),
+		MCPName:          value("mcp_name"),
 		ToolName:         value("tool_name"),
 		Params:           json.RawMessage(value("params")),
 		Result:           json.RawMessage(value("result")),
@@ -142,6 +143,18 @@ func scanSQLiteEntry(rows *sql.Rows) (audit.Entry, error) {
 	if raw := value("error"); raw != "" && raw != "null" {
 		if err := json.Unmarshal([]byte(raw), &entry.Error); err != nil {
 			return audit.Entry{}, fmt.Errorf("decode error field: %w", err)
+		}
+	}
+	if raw := value("principal"); raw != "" && raw != "null" {
+		entry.Principal = &audit.Principal{}
+		if err := json.Unmarshal([]byte(raw), entry.Principal); err != nil {
+			return audit.Entry{}, fmt.Errorf("decode principal field: %w", err)
+		}
+	}
+	if raw := value("policy"); raw != "" && raw != "null" {
+		entry.Policy = &audit.PolicyEvidence{}
+		if err := json.Unmarshal([]byte(raw), entry.Policy); err != nil {
+			return audit.Entry{}, fmt.Errorf("decode policy field: %w", err)
 		}
 	}
 	if raw := value("integrity"); raw != "" && raw != "null" {
