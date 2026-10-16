@@ -502,16 +502,12 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 			continue
 		}
 		metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
-		toolName := ""
-		if msg.Method == "tools/call" {
-			toolName = metadata.Name
-		}
 		clientID := p.config.ClientID
 		if principal != nil && principal.ClientID != "" {
 			clientID = principal.ClientID
 		}
-		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), toolName, msg.Params, len(msg.ID) > 0, startedAt, clientID, auditPrincipal(principal))
 		decision := p.evaluatePolicy(principal, metadata.Method, metadata.Name)
+		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), metadata.Name, msg.Params, len(msg.ID) > 0, startedAt, clientID, auditPrincipal(principal), auditPolicyEvidence(decision))
 		p.recordPolicyDecision(decision)
 		if !decision.Allowed {
 			rpcErr := policyError(decision)
@@ -520,9 +516,9 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principa
 			}
 			return pending, buildErrorResponse(msg.ID, rpcErr)
 		}
-		if msg.Method == "tools/call" && !p.config.Limiter.Allow(principal.ClientID, toolName) {
+		if msg.Method == "tools/call" && !p.config.Limiter.Allow(principal.ClientID, metadata.Name) {
 			if p.config.Metrics != nil {
-				p.config.Metrics.RecordRateLimitRejection(principal.ClientID, toolName)
+				p.config.Metrics.RecordRateLimitRejection(principal.ClientID, metadata.Name)
 			}
 			rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
 			if err := p.record(call, audit.OutcomeRateLimited, audit.DirectionClientToServer, nil, rpcErr); err != nil {
@@ -653,18 +649,24 @@ func httpFailureOutcome(ctx context.Context, err error) audit.Outcome {
 	return audit.OutcomeUpstreamError
 }
 
-func (p *HTTPProxy) newPendingCall(method, requestID, toolName string, params json.RawMessage, expectsResponse bool, startedAt time.Time, clientID string, principal *audit.Principal) pendingCall {
+func (p *HTTPProxy) newPendingCall(method, requestID, mcpName string, params json.RawMessage, expectsResponse bool, startedAt time.Time, clientID string, principal *audit.Principal, policyEvidence *audit.PolicyEvidence) pendingCall {
 	if principal == nil {
 		principal = staticAuditPrincipal(clientID)
+	}
+	toolName := ""
+	if method == "tools/call" {
+		toolName = mcpName
 	}
 	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
 		Method:    method,
 		RequestID: requestID,
+		MCPName:   mcpName,
 		ToolName:  toolName,
 		Params:    params,
 		ClientID:  clientID,
 		ServerID:  p.config.ServerID,
 		Principal: principal,
+		Policy:    policyEvidence,
 	}, startedAt)
 	if err != nil {
 		p.log.Error("failed to start audit operation", "method", method, "error", err)

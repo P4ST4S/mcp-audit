@@ -25,7 +25,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
 - `proxy.bind_address` and the `proxy.http.*` request-limit, timeout, Origin, and Host validation keys are part of the stable configuration surface.
 - The `auth.mode`, `auth.static.*`, and `auth.oidc.*` keys are part of the stable configuration surface.
-- Principal-aware `policy.rules` selectors (`subject`, `issuer`, `role`,
+- Policy rule `id` and principal-aware selectors (`subject`, `issuer`, `role`,
   `scope`, `method`, and `name`) are additive stable configuration keys.
 - `policy.scope` is a stable configuration key. Its compatibility default is
   `tools_only`; `all_operations` opts into enforcement for every MCP method.
@@ -43,14 +43,18 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 
 ### Audit entry JSON schema
 
-The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `signature`, `integrity`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `mcp_name`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `policy`, `signature`, `integrity`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
 
 The `principal` object contains only authenticated `subject`, `client_id`, and
 `issuer`. Raw JWT claims are never part of the audit schema.
 
+The `policy` object records the applied `decision` and optional configured
+`rule_id`. `mcp_name` is the generic MCP object name; `tool_name` remains
+populated for `tools/call` compatibility.
+
 The signature is computed over `id + timestamp + method + tool_name + params`. Changing the signed field set requires a MAJOR bump because it invalidates existing signatures.
 
-The additive `integrity` object is a separately versioned format. Integrity v2 uses RFC 8785 JCS and HMAC-SHA256 to authenticate the complete critical record documented in [`docs/AUDIT_INTEGRITY.md`](docs/AUDIT_INTEGRITY.md). New integrity versions may be added without changing legacy `signature` semantics; an existing integrity version's algorithm or protected field set is stable.
+The additive `integrity` object is a separately versioned format. Integrity v2 uses RFC 8785 JCS and HMAC-SHA256 to authenticate the complete critical record, including the minimal authenticated `principal`, as documented in [`docs/AUDIT_INTEGRITY.md`](docs/AUDIT_INTEGRITY.md). New integrity versions may be added without changing legacy `signature` semantics; an existing integrity version's algorithm or protected field set is stable.
 
 ### Prometheus metrics
 

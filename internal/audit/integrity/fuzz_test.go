@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func FuzzIntegrityV2RoundTrip(f *testing.F) {
+func FuzzVerifyIntegrity(f *testing.F) {
 	f.Add("tools/call", "client", []byte(`{"name":"read_file","arguments":{"path":"/tmp/a"}}`), []byte(`{"ok":true}`), []byte(`{"retryable":false}`), int64(17))
 	f.Add("resources/read", "client", []byte(`{"uri":"file:///tmp/a","n":9007199254740991}`), []byte(`null`), []byte(`null`), int64(0))
 	f.Add("prompts/get", "客户端", []byte(`{"name":"résumé"}`), []byte(`{"text":"é"}`), []byte(`{"nested":[1,2,3]}`), int64(-1))
@@ -22,12 +22,19 @@ func FuzzIntegrityV2RoundTrip(f *testing.F) {
 			Direction:  "client→server",
 			Transport:  "http",
 			Method:     method,
+			MCPName:    "fuzz-name",
 			Params:     append(json.RawMessage(nil), params...),
 			Result:     append(json.RawMessage(nil), result...),
 			Error:      &RPCErrorV2{Code: -32000, Message: "upstream", Data: append(json.RawMessage(nil), errorData...)},
 			DurationMS: durationMS,
 			ClientID:   clientID,
 			ServerID:   "server",
+			Principal: &PrincipalV2{
+				Subject:  "fuzz-subject",
+				ClientID: clientID,
+				Issuer:   "fuzz-issuer",
+			},
+			Policy: &PolicyV2{Decision: "allow", RuleID: "FUZZ-001"},
 		}
 		signer := NewSigner("fuzz regression signing secret", "fuzz")
 		metadata, err := signer.Sign(entry)
@@ -38,7 +45,7 @@ func FuzzIntegrityV2RoundTrip(f *testing.F) {
 		if err := verifier.Verify(entry, metadata); err != nil {
 			t.Fatalf("fresh signature did not verify: %v", err)
 		}
-		entry.ClientID += "\x00mutated"
+		entry.Principal.Subject += "\x00mutated"
 		if err := verifier.Verify(entry, metadata); !errors.Is(err, ErrInvalidSignature) {
 			t.Fatalf("mutated signed entry error = %v, want invalid signature", err)
 		}

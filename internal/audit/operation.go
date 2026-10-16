@@ -48,6 +48,8 @@ func NewOperation(logger *Logger, entry Entry, startedAt time.Time) (*Operation,
 	}
 	entry.AuditOperationID = operationID.String()
 	entry.Params = cloneRawMessage(entry.Params)
+	entry.Principal = clonePrincipal(entry.Principal)
+	entry.Policy = clonePolicyEvidence(entry.Policy)
 	entry.Result = nil
 	entry.Error = nil
 	entry.Outcome = ""
@@ -107,5 +109,21 @@ func cloneRPCError(rpcErr *RPCError) *RPCError {
 	}
 	cloned := *rpcErr
 	cloned.Data = cloneRawMessage(rpcErr.Data)
+	return &cloned
+}
+
+func clonePrincipal(principal *Principal) *Principal {
+	if principal == nil {
+		return nil
+	}
+	cloned := *principal
+	return &cloned
+}
+
+func clonePolicyEvidence(evidence *PolicyEvidence) *PolicyEvidence {
+	if evidence == nil {
+		return nil
+	}
+	cloned := *evidence
 	return &cloned
 }

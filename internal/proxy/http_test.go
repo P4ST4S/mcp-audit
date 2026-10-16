@@ -203,6 +203,7 @@ func TestHTTPProxyUsesAuthenticatedPrincipalForPolicyAndAudit(t *testing.T) {
 		Enabled:       true,
 		DefaultAction: policy.ActionAllow,
 		Rules: []policy.Rule{{
+			ID:      "SEC-014",
 			Action:  policy.ActionDeny,
 			Subject: "alice",
 			Issuer:  "https://issuer.example.com",
@@ -249,13 +250,16 @@ func TestHTTPProxyUsesAuthenticatedPrincipalForPolicyAndAudit(t *testing.T) {
 	if entry.Error == nil || entry.Error.Code != policyDeniedCode {
 		t.Fatalf("audit error = %#v", entry.Error)
 	}
+	if entry.MCPName != "delete_file" || entry.Policy == nil || entry.Policy.Decision != policy.ActionDeny || entry.Policy.RuleID != "SEC-014" {
+		t.Fatalf("audit MCP policy evidence = %#v", entry)
+	}
 }
 
 func TestHTTPProxyDeniesNonToolOperationWhenAllOperationsEnabled(t *testing.T) {
 	engine, err := policy.NewEngine(policy.Config{
 		Enabled: true,
 		Scope:   policy.ScopeAllOperations,
-		Rules:   []policy.Rule{{Action: policy.ActionDeny, Method: "prompts/get", Name: "restricted"}},
+		Rules:   []policy.Rule{{ID: "PROMPT-001", Action: policy.ActionDeny, Method: "prompts/get", Name: "restricted"}},
 	})
 	if err != nil {
 		t.Fatalf("new policy engine: %v", err)
@@ -280,6 +284,9 @@ func TestHTTPProxyDeniesNonToolOperationWhenAllOperationsEnabled(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 	if upstreamCalls != 0 || len(store.entries) != 1 || store.entries[0].Method != "prompts/get" || store.entries[0].ToolName != "" {
 		t.Fatalf("upstream/audit = %d/%#v", upstreamCalls, store.entries)
+	}
+	if store.entries[0].MCPName != "restricted" || store.entries[0].Policy == nil || store.entries[0].Policy.RuleID != "PROMPT-001" {
+		t.Fatalf("generic MCP evidence = %#v", store.entries[0])
 	}
 }
 
