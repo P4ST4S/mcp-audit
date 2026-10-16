@@ -16,7 +16,10 @@ func TestStdioProxyWritesAuditEntry(t *testing.T) {
 	input := []byte(`{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"message":"hello"}}}` + "\n")
 
 	cmd := exec.Command("go", "run", ".", "--transport", "stdio", "--upstream", "cat", "--storage", "jsonl", "--no-dashboard", "--no-metrics", "--log-level", "error")
-	cmd.Env = append(os.Environ(), "AUDIT_PATH="+auditPath)
+	cmd.Env = append(os.Environ(),
+		"AUDIT_PATH="+auditPath,
+		preferredSigningSecretEnv+"=0123456789abcdef0123456789abcdef",
+	)
 	cmd.Stdin = bytes.NewReader(input)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -59,6 +62,9 @@ func TestStdioProxyWritesAuditEntry(t *testing.T) {
 		}
 		if len(entry.Params) == 0 {
 			t.Fatal("params were not recorded")
+		}
+		if entry.Signature == "" || entry.Integrity == nil {
+			t.Fatalf("signed entry is missing legacy or Integrity v2 metadata: %#v", entry)
 		}
 		found = true
 	}

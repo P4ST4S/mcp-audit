@@ -23,6 +23,13 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - Removing or renaming a key requires a MAJOR bump and a deprecation period (see [Deprecation](#deprecation)).
 - The dashboard authentication keys (`dashboard.auth.token`) and dashboard bind address key (`dashboard.bind_address`) are part of the stable configuration surface.
 - `proxy.forward_headers` is part of the stable configuration surface. Forwarded headers are passed verbatim to the trusted upstream HTTP MCP server, but HTTP headers are not recorded as dedicated fields in audit entries.
+- `proxy.bind_address` and the `proxy.http.*` request-limit, timeout, Origin, and Host validation keys are part of the stable configuration surface.
+- The `auth.mode`, `auth.static.*`, and `auth.oidc.*` keys are part of the stable configuration surface.
+- Policy rule `id` and principal-aware selectors (`subject`, `issuer`, `role`,
+  `scope`, `method`, and `name`) are additive stable configuration keys.
+- `policy.scope` is a stable configuration key. Its compatibility default is
+  `tools_only`; `all_operations` opts into enforcement for every MCP method.
+- The incoming TLS keys `proxy.tls.enabled`, `proxy.tls.cert_file`, and `proxy.tls.key_file` are part of the stable configuration surface.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`, `audit.rotation.interval`, `audit.rotation.max_age_days`) are part of the stable configuration surface.
 
 ### CLI flags
@@ -30,16 +37,30 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - Existing flags keep their meaning and accepted values.
 - New flags are additive.
 - The `--version` output format is documented and stable: `mcp-audit <version> (commit <sha>, built <iso8601>)`.
+- The `verify` command accepts JSONL and SQLite audit artifacts. Its text counter
+  names, JSON result fields, and exit statuses (`0` verified, `1` invalid or
+  unsigned evidence, `2` usage or input failure) are stable.
 
 ### Audit entry JSON schema
 
-The fields recorded for each audit entry (`id`, `timestamp`, `direction`, `transport`, `method`, `request_id`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `signature`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+The fields recorded for each audit entry (`id`, `timestamp`, `audit_operation_id`, `outcome`, `direction`, `transport`, `method`, `request_id`, `mcp_name`, `tool_name`, `params`, `result`, `error`, `duration_ms`, `client_id`, `server_id`, `principal`, `policy`, `signature`, `integrity`) keep their names and types. New fields may be added in MINOR releases. Existing fields are not removed or renamed without a MAJOR bump.
+
+The `principal` object contains only authenticated `subject`, `client_id`, and
+`issuer`. Raw JWT claims are never part of the audit schema.
+
+The `policy` object records the applied `decision` and optional configured
+`rule_id`. `mcp_name` is the generic MCP object name; `tool_name` remains
+populated for `tools/call` compatibility.
 
 The signature is computed over `id + timestamp + method + tool_name + params`. Changing the signed field set requires a MAJOR bump because it invalidates existing signatures.
+
+The additive `integrity` object is a separately versioned format. Integrity v2 uses RFC 8785 JCS and HMAC-SHA256 to authenticate the complete critical record, including the minimal authenticated `principal`, as documented in [`docs/AUDIT_INTEGRITY.md`](docs/AUDIT_INTEGRITY.md). New integrity versions may be added without changing legacy `signature` semantics; an existing integrity version's algorithm or protected field set is stable.
 
 ### Prometheus metrics
 
 Metric names and label sets are stable. The `mcp_audit_*` prefix is reserved. New metrics are additive. A metric is never removed or renamed in a MINOR release.
+
+`mcp_audit_http_request_rejections_total{reason}` counts requests rejected before upstream forwarding. Stable reasons are `body_too_large`, `origin`, `host`, and `authentication`.
 
 ### OTLP export attributes
 
@@ -56,6 +77,9 @@ Successful JSON API responses include `Cache-Control: no-store`.
 ### Exit codes and JSON-RPC error codes
 
 The proxy-emitted JSON-RPC error codes (`-32029` rate-limited, `-32030` policy denied) are stable.
+
+MCP metadata mismatches are rejected before upstream forwarding with HTTP `400`
+and the standard JSON-RPC invalid-request code `-32600`.
 
 ## Not part of the stable surface
 

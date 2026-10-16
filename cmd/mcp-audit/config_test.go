@@ -4,16 +4,24 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/proxy"
 )
 
+func setTestSigningSecret(t *testing.T) {
+	t.Helper()
+	t.Setenv(preferredSigningSecretEnv, "0123456789abcdef0123456789abcdef")
+}
+
 // TestLoadConfigUsesDefaultUpstreamTimeout verifies the HTTP upstream timeout
 // default is applied when neither config nor flags specify it.
 func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
+	setTestSigningSecret(t)
 	config, err := loadConfig(cliFlags{
 		config:   filepath.Join(t.TempDir(), "missing.yaml"),
 		upstream: "cat",
@@ -38,9 +46,52 @@ func TestLoadConfigUsesDefaultUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestLoadConfigReadsHTTPHardening(t *testing.T) {
+	setTestSigningSecret(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  transport: http
+  upstream: http://upstream.local
+  bind_address: 127.0.0.1
+  http:
+    max_request_body_bytes: 4096
+    max_header_bytes: 8192
+    read_header_timeout: 2s
+    read_timeout: 3s
+    write_timeout: 4s
+    idle_timeout: 5s
+    allowed_origins:
+      - https://internal.example.com
+    allowed_hosts:
+      - localhost
+`)
+	if err := os.WriteFile(configPath, raw, 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Proxy.BindAddress != "127.0.0.1" {
+		t.Fatalf("bind address = %q", config.Proxy.BindAddress)
+	}
+	if config.Proxy.HTTP.MaxRequestBodyBytes != 4096 || config.Proxy.HTTP.MaxHeaderBytes != 8192 {
+		t.Fatalf("HTTP limits = %d/%d", config.Proxy.HTTP.MaxRequestBodyBytes, config.Proxy.HTTP.MaxHeaderBytes)
+	}
+	if config.Proxy.HTTP.ReadHeaderTimeout != 2*time.Second || config.Proxy.HTTP.ReadTimeout != 3*time.Second ||
+		config.Proxy.HTTP.WriteTimeout != 4*time.Second || config.Proxy.HTTP.IdleTimeout != 5*time.Second {
+		t.Fatalf("HTTP timeouts = %#v", config.Proxy.HTTP)
+	}
+	if len(config.Proxy.HTTP.AllowedOrigins) != 1 || len(config.Proxy.HTTP.AllowedHosts) != 1 {
+		t.Fatalf("HTTP access lists = %#v", config.Proxy.HTTP)
+	}
+}
+
 // TestLoadConfigReadsUpstreamTimeout verifies config.yaml can set the HTTP
 // upstream timeout.
 func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -59,12 +110,17 @@ func TestLoadConfigReadsUpstreamTimeout(t *testing.T) {
 }
 
 func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
+  transport: http
   upstream: https://upstream.local
   forward_headers:
     - Authorization
   tls:
+    enabled: true
+    cert_file: /tmp/server.crt
+    key_file: /tmp/server.key
     ca_file: /tmp/ca.pem
     server_name: mcp.internal
     insecure_skip_verify: true
@@ -88,6 +144,9 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 	}
 	if config.Proxy.TLS.CAFile != "/tmp/ca.pem" {
 		t.Fatalf("ca_file = %q", config.Proxy.TLS.CAFile)
+	}
+	if !config.Proxy.TLS.Enabled || config.Proxy.TLS.CertFile != "/tmp/server.crt" || config.Proxy.TLS.KeyFile != "/tmp/server.key" {
+		t.Fatalf("incoming tls = %t/%q/%q", config.Proxy.TLS.Enabled, config.Proxy.TLS.CertFile, config.Proxy.TLS.KeyFile)
 	}
 	if config.Proxy.TLS.ServerName != "mcp.internal" {
 		t.Fatalf("server_name = %q", config.Proxy.TLS.ServerName)
@@ -113,6 +172,7 @@ func TestLoadConfigReadsProxyTLSAndRetry(t *testing.T) {
 }
 
 func TestLoadConfigReadsDashboardBindAddressAndAuthToken(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   upstream: cat
@@ -145,6 +205,7 @@ dashboard:
 }
 
 func TestLoadConfigReadsAuditRotation(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	raw := []byte(`proxy:
   upstream: cat
@@ -181,6 +242,7 @@ audit:
 }
 
 func TestLoadConfigAuditRotationDefaults(t *testing.T) {
+	setTestSigningSecret(t)
 	config, err := loadConfig(cliFlags{
 		config:   filepath.Join(t.TempDir(), "missing.yaml"),
 		upstream: "cat",
@@ -197,11 +259,87 @@ func TestLoadConfigAuditRotationDefaults(t *testing.T) {
 	if config.Audit.Rotation.MaxAgeDays != 0 {
 		t.Fatalf("max_age_days = %d, want 0", config.Audit.Rotation.MaxAgeDays)
 	}
+	if config.Audit.Signing.KeyID != "default" {
+		t.Fatalf("signing key ID = %q, want default", config.Audit.Signing.KeyID)
+	}
+}
+
+func TestValidateConfigRejectsInvalidSigningKeyID(t *testing.T) {
+	config := minimalValidConfig()
+	config.Audit.Sign = true
+	config.Audit.Signing.KeyID = "invalid key"
+
+	if err := validateConfig(config); err == nil {
+		t.Fatal("expected invalid signing key ID error, got nil")
+	}
+}
+
+func TestValidateConfigAuditSigningSecret(t *testing.T) {
+	cases := []struct {
+		name    string
+		sign    bool
+		secret  string
+		wantErr bool
+	}{
+		{name: "disabled without secret", sign: false, secret: "", wantErr: false},
+		{name: "enabled with secret", sign: true, secret: "0123456789abcdef0123456789abcdef", wantErr: false},
+		{name: "enabled without secret", sign: true, secret: "", wantErr: true},
+		{name: "enabled with whitespace", sign: true, secret: "  \t ", wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			config.Audit.Sign = tc.sign
+			config.Audit.Secret = tc.secret
+			config.Audit.Signing.KeyID = "default"
+			err := validateConfig(config)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "audit signing is enabled but no signing secret is configured") {
+				t.Fatalf("validation error = %q, want clear missing-secret message", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigPreferredSigningSecretTakesPrecedence(t *testing.T) {
+	t.Setenv(legacySigningSecretEnv, "legacy-secret")
+	t.Setenv(preferredSigningSecretEnv, "preferred-secret")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\naudit:\n  secret: config-secret\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Audit.Secret != "preferred-secret" {
+		t.Fatalf("resolved secret = %q, want preferred-secret", config.Audit.Secret)
+	}
+}
+
+func TestLoadConfigEmptyPreferredSigningSecretFailsClosed(t *testing.T) {
+	t.Setenv(preferredSigningSecretEnv, "")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\naudit:\n  secret: config-secret\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}}); err == nil {
+		t.Fatal("expected explicit empty preferred signing secret to fail")
+	}
 }
 
 // TestLoadConfigUpstreamTimeoutFlagOverridesConfig verifies the CLI flag has
 // higher precedence than config.yaml for the HTTP upstream timeout.
 func TestLoadConfigUpstreamTimeoutFlagOverridesConfig(t *testing.T) {
+	setTestSigningSecret(t)
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(configPath, []byte("proxy:\n  upstream: cat\n  upstream_timeout_ms: 100\n"), 0644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -234,6 +372,29 @@ func TestValidateConfigRejectsInvalidUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsInvalidHTTPHardening(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "body limit", configure: func(config *appConfig) { config.Proxy.HTTP.MaxRequestBodyBytes = 0 }},
+		{name: "header limit", configure: func(config *appConfig) { config.Proxy.HTTP.MaxHeaderBytes = 0 }},
+		{name: "read header timeout", configure: func(config *appConfig) { config.Proxy.HTTP.ReadHeaderTimeout = 0 }},
+		{name: "bind whitespace", configure: func(config *appConfig) { config.Proxy.BindAddress = "127.0.0.1 " }},
+		{name: "origin", configure: func(config *appConfig) { config.Proxy.HTTP.AllowedOrigins = []string{"file:///tmp"} }},
+		{name: "host", configure: func(config *appConfig) { config.Proxy.HTTP.AllowedHosts = []string{"https://example.com"} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidHTTPConfig()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected invalid HTTP hardening config")
+			}
+		})
+	}
+}
+
 func TestValidateConfigRejectsInvalidProxyRetry(t *testing.T) {
 	config := appConfig{}
 	config.Proxy.Transport = "http"
@@ -259,6 +420,33 @@ func TestValidateConfigRejectsPartialProxyMTLSConfig(t *testing.T) {
 
 	if err := validateConfig(config); err == nil {
 		t.Fatal("expected partial mTLS config error, got nil")
+	}
+}
+
+func TestValidateConfigRejectsInvalidIncomingTLS(t *testing.T) {
+	cases := []struct {
+		name      string
+		transport string
+		enabled   bool
+		certFile  string
+		keyFile   string
+	}{
+		{name: "enabled without certificate", transport: "http", enabled: true},
+		{name: "enabled without key", transport: "http", enabled: true, certFile: "server.crt"},
+		{name: "certificate while disabled", transport: "http", certFile: "server.crt", keyFile: "server.key"},
+		{name: "enabled on stdio", transport: "stdio", enabled: true, certFile: "server.crt", keyFile: "server.key"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidHTTPConfig()
+			config.Proxy.Transport = tc.transport
+			config.Proxy.TLS.Enabled = tc.enabled
+			config.Proxy.TLS.CertFile = tc.certFile
+			config.Proxy.TLS.KeyFile = tc.keyFile
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected incoming TLS validation error, got nil")
+			}
+		})
 	}
 }
 
@@ -354,6 +542,146 @@ func TestValidateConfigAllowsAuthorizationForwardHeader(t *testing.T) {
 
 	if err := validateConfig(config); err != nil {
 		t.Fatalf("validate config: %v", err)
+	}
+}
+
+func TestLoadConfigReadsStaticBearerAuthFromEnvironment(t *testing.T) {
+	setTestSigningSecret(t)
+	t.Setenv("MCP_AUDIT_STATIC_BEARER_TOKEN", "0123456789abcdef0123456789abcdef")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  transport: http
+  upstream: http://upstream.local
+auth:
+  mode: static_bearer
+  static:
+    subject: alice
+    client_id: client-1
+    issuer: internal
+    roles: [operator]
+    scopes: [tools:read]
+dashboard:
+  enabled: false
+metrics:
+  path: /metrics
+`)
+	if err := os.WriteFile(configPath, raw, 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if config.Auth.Static.BearerToken != "0123456789abcdef0123456789abcdef" || config.Auth.Static.Subject != "alice" {
+		t.Fatalf("static auth config = %#v", config.Auth.Static)
+	}
+	authenticator, err := newAuthenticator(config)
+	if err != nil || authenticator == nil {
+		t.Fatalf("new authenticator = %T, err = %v", authenticator, err)
+	}
+}
+
+func TestLoadConfigReadsPolicyRuleID(t *testing.T) {
+	setTestSigningSecret(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	raw := []byte(`proxy:
+  upstream: cat
+policy:
+  enabled: true
+  scope: all_operations
+  rules:
+    - id: SEC-014
+      action: deny
+      method: resources/read
+      name: file:///restricted
+`)
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	config, err := loadConfig(cliFlags{config: configPath, set: map[string]bool{}})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(config.Policy.Rules) != 1 || config.Policy.Rules[0].ID != "SEC-014" {
+		t.Fatalf("policy rules = %#v", config.Policy.Rules)
+	}
+}
+
+func TestValidateConfigRejectsInvalidAuth(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "unknown mode", configure: func(config *appConfig) { config.Auth.Mode = "magic" }},
+		{name: "missing subject", configure: func(config *appConfig) { config.Auth.Static.Subject = "" }},
+		{name: "token in none mode", configure: func(config *appConfig) { config.Auth.Static.BearerToken = "0123456789abcdef0123456789abcdef" }},
+		{name: "short static token", configure: func(config *appConfig) {
+			config.Proxy.Transport = "http"
+			config.Proxy.Upstream = "http://upstream.local"
+			config.Proxy.UpstreamTimeoutMS = proxy.DefaultHTTPUpstreamTimeoutMS
+			config.Proxy.HTTP.MaxRequestBodyBytes = proxy.DefaultHTTPMaxRequestBodyBytes
+			config.Proxy.HTTP.MaxHeaderBytes = proxy.DefaultHTTPMaxHeaderBytes
+			config.Proxy.HTTP.ReadHeaderTimeout = proxy.DefaultHTTPReadHeaderTimeout
+			config.Proxy.HTTP.ReadTimeout = proxy.DefaultHTTPReadTimeout
+			config.Proxy.HTTP.WriteTimeout = proxy.DefaultHTTPWriteTimeout
+			config.Proxy.HTTP.IdleTimeout = proxy.DefaultHTTPIdleTimeout
+			config.Auth.Mode = "static_bearer"
+			config.Auth.Static.BearerToken = "short"
+		}},
+		{name: "static bearer on stdio", configure: func(config *appConfig) {
+			config.Auth.Mode = "static_bearer"
+			config.Auth.Static.BearerToken = "0123456789abcdef0123456789abcdef"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := minimalValidConfig()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected authentication config error")
+			}
+		})
+	}
+}
+
+func TestValidateOIDCConfig(t *testing.T) {
+	valid := func() appConfig {
+		config := minimalValidHTTPConfig()
+		config.Auth.Mode = "oidc"
+		config.Auth.OIDC.Issuer = "https://issuer.example.com/tenant"
+		config.Auth.OIDC.Audience = "mcp-audit"
+		config.Auth.OIDC.JWKSURI = "https://issuer.example.com/.well-known/jwks.json"
+		config.Auth.OIDC.ClientIDClaim = "client_id"
+		config.Auth.OIDC.RolesClaim = "roles"
+		config.Auth.OIDC.ScopesClaim = "scope"
+		config.Auth.OIDC.AllowedMethods = []string{"RS256"}
+		config.Auth.OIDC.HTTPTimeout = time.Second
+		config.Auth.OIDC.RefreshInterval = time.Minute
+		return config
+	}
+	if err := validateConfig(valid()); err != nil {
+		t.Fatalf("valid OIDC config: %v", err)
+	}
+	cases := []struct {
+		name      string
+		configure func(*appConfig)
+	}{
+		{name: "missing issuer", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "" }},
+		{name: "insecure remote issuer", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "http://issuer.example.com" }},
+		{name: "insecure remote JWKS", configure: func(config *appConfig) { config.Auth.OIDC.JWKSURI = "http://issuer.example.com/jwks" }},
+		{name: "issuer query", configure: func(config *appConfig) { config.Auth.OIDC.Issuer = "https://issuer.example.com?tenant=1" }},
+		{name: "symmetric algorithm", configure: func(config *appConfig) { config.Auth.OIDC.AllowedMethods = []string{"HS256"} }},
+		{name: "empty algorithms", configure: func(config *appConfig) { config.Auth.OIDC.AllowedMethods = nil }},
+		{name: "negative clock skew", configure: func(config *appConfig) { config.Auth.OIDC.ClockSkew = -time.Second }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := valid()
+			tc.configure(&config)
+			if err := validateConfig(config); err == nil {
+				t.Fatal("expected OIDC validation error")
+			}
+		})
 	}
 }
 
@@ -458,11 +786,28 @@ func minimalValidConfig() appConfig {
 	config := appConfig{}
 	config.Proxy.Transport = "stdio"
 	config.Proxy.Upstream = "cat"
+	config.Proxy.ClientID = "test-client"
+	config.Auth.Mode = "none"
+	config.Auth.Static.Subject = "local"
 	config.Audit.Storage = "jsonl"
 	config.Metrics.Path = "/metrics"
 	config.Dashboard.Enabled = true
 	config.Dashboard.BindAddress = dashboard.DefaultBindAddress
 	config.Dashboard.Port = 9090
+	return config
+}
+
+func minimalValidHTTPConfig() appConfig {
+	config := minimalValidConfig()
+	config.Proxy.Transport = "http"
+	config.Proxy.Upstream = "http://upstream.local"
+	config.Proxy.UpstreamTimeoutMS = proxy.DefaultHTTPUpstreamTimeoutMS
+	config.Proxy.HTTP.MaxRequestBodyBytes = proxy.DefaultHTTPMaxRequestBodyBytes
+	config.Proxy.HTTP.MaxHeaderBytes = proxy.DefaultHTTPMaxHeaderBytes
+	config.Proxy.HTTP.ReadHeaderTimeout = proxy.DefaultHTTPReadHeaderTimeout
+	config.Proxy.HTTP.ReadTimeout = proxy.DefaultHTTPReadTimeout
+	config.Proxy.HTTP.WriteTimeout = proxy.DefaultHTTPWriteTimeout
+	config.Proxy.HTTP.IdleTimeout = proxy.DefaultHTTPIdleTimeout
 	return config
 }
 

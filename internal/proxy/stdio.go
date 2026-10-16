@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
+	"github.com/P4ST4S/mcp-audit/internal/mcp"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 )
@@ -65,7 +67,9 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 	}
 	cleanupCtx, stopCleanup := context.WithCancel(ctx)
 	defer stopCleanup()
-	go p.state.cleanupLoop(cleanupCtx, pendingCallTTL, pendingCallCleanupInterval)
+	go p.state.cleanupLoop(cleanupCtx, pendingCallTTL, pendingCallCleanupInterval, func(calls []pendingCall) {
+		p.finalizeCalls(calls, audit.OutcomeTimeout)
+	})
 
 	cmd := exec.Command("/bin/sh", "-c", p.config.Upstream)
 	stdin, err := cmd.StdinPipe()
@@ -106,11 +110,15 @@ func (p *StdioProxy) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		stopCleanup()
 		_ = p.shutdownUpstream(cmd, waitErr)
 		p.waitForPipes(pipesDone)
+		p.finalizeAll(audit.OutcomeCancelled)
 		return nil
 	case err := <-waitErr:
+		stopCleanup()
 		p.waitForPipes(pipesDone)
+		p.finalizeAll(audit.OutcomeUpstreamError)
 		if err != nil {
 			return fmt.Errorf("proxy: stdio: wait: %w", err)
 		}
@@ -163,6 +171,7 @@ func (p *StdioProxy) pipeClientToServer(ctx context.Context, src io.Reader, upst
 		}
 		if _, err := upstream.Write(append(line, '\n')); err != nil {
 			p.log.Error("failed to write to upstream", "error", err)
+			p.finalizeAll(audit.OutcomeUpstreamError)
 			return
 		}
 		select {
@@ -173,6 +182,7 @@ func (p *StdioProxy) pipeClientToServer(ctx context.Context, src io.Reader, upst
 	}
 	if err := scanner.Err(); err != nil {
 		p.log.Error("failed to read client stdin", "error", err)
+		p.finalizeAll(audit.OutcomeClientDisconnect)
 	}
 }
 
@@ -185,6 +195,7 @@ func (p *StdioProxy) pipeServerToClient(ctx context.Context, src io.Reader, clie
 		clientMu.Unlock()
 		if err != nil {
 			p.log.Error("failed to write to client stdout", "error", err)
+			p.finalizeAll(audit.OutcomeClientDisconnect)
 			return
 		}
 		p.observeServerMessage(line)
@@ -196,6 +207,7 @@ func (p *StdioProxy) pipeServerToClient(ctx context.Context, src io.Reader, clie
 	}
 	if err := scanner.Err(); err != nil {
 		p.log.Error("failed to read upstream stdout", "error", err)
+		p.finalizeAll(audit.OutcomeUpstreamError)
 	}
 }
 
@@ -217,58 +229,39 @@ func (p *StdioProxy) observeClientMessage(raw []byte) messageAction {
 	}
 	for _, msg := range messages {
 		if msg.Method != "" {
-			toolName := toolNameFromParams(msg.Method, msg.Params)
-			if msg.Method == "tools/call" {
-				decision := p.evaluatePolicy(toolName)
-				p.recordPolicyDecision(decision)
-				if !decision.Allowed {
-					rpcErr := policyError(decision)
-					if err := p.record(pendingCall{
-						method:    msg.Method,
-						requestID: jsonRPCID(msg.ID),
-						toolName:  toolName,
-						params:    msg.Params,
-						startedAt: time.Now(),
-					}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
-						p.log.Error("failed to audit policy denied call", "error", err)
-					}
-					return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
+			metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
+			decision := p.evaluatePolicy(metadata.Method, metadata.Name)
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), metadata.Name, msg.Params, audit.DirectionServerToClient, time.Now(), auditPolicyEvidence(decision))
+			p.recordPolicyDecision(decision)
+			if !decision.Allowed {
+				rpcErr := policyError(decision)
+				if err := p.record(call, audit.OutcomeDenied, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+					p.log.Error("failed to audit policy denied operation", "error", err)
 				}
+				return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
 			}
-			if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
+			if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, metadata.Name) {
 				if p.config.Metrics != nil {
-					p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
+					p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, metadata.Name)
 				}
 				rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
-				if err := p.record(pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				}, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+				if err := p.record(call, audit.OutcomeRateLimited, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 					p.log.Error("failed to audit rate limited call", "error", err)
 				}
 				return messageAction{reject: buildErrorResponse(msg.ID, rpcErr)}
 			}
 			if len(msg.ID) > 0 {
-				p.state.rememberClient(string(msg.ID), pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				})
+				p.state.rememberClient(string(msg.ID), call)
 				continue
 			}
-			if err := p.record(pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: time.Now()}, audit.DirectionClientToServer, nil, nil); err != nil {
+			if err := p.record(call, audit.OutcomeSuccess, audit.DirectionClientToServer, nil, nil); err != nil {
 				p.log.Error("failed to audit client notification", "error", err)
 			}
 			continue
 		}
 		if len(msg.ID) > 0 {
 			if call, ok := p.state.takeServer(string(msg.ID)); ok {
-				if err := p.record(call, audit.DirectionClientToServer, msg.Result, msg.Error); err != nil {
+				if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionClientToServer, msg.Result, msg.Error); err != nil {
 					p.log.Error("failed to audit client response", "error", err)
 				}
 			}
@@ -281,29 +274,25 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	messages, err := decodeMessages(raw)
 	if err != nil {
 		p.log.Warn("failed to inspect server message", "error", err)
+		p.finalizeCalls(p.state.takeClients(), audit.OutcomeMalformedUpstreamResponse)
 		return
 	}
 	for _, msg := range messages {
 		if msg.Method != "" {
-			toolName := toolNameFromParams(msg.Method, msg.Params)
+			metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
+			call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), metadata.Name, msg.Params, audit.DirectionClientToServer, time.Now(), nil)
 			if len(msg.ID) > 0 {
-				p.state.rememberServer(string(msg.ID), pendingCall{
-					method:    msg.Method,
-					requestID: jsonRPCID(msg.ID),
-					toolName:  toolName,
-					params:    msg.Params,
-					startedAt: time.Now(),
-				})
+				p.state.rememberServer(string(msg.ID), call)
 				continue
 			}
-			if err := p.record(pendingCall{method: msg.Method, toolName: toolName, params: msg.Params, startedAt: time.Now()}, audit.DirectionServerToClient, nil, nil); err != nil {
+			if err := p.record(call, audit.OutcomeSuccess, audit.DirectionServerToClient, nil, nil); err != nil {
 				p.log.Error("failed to audit server notification", "error", err)
 			}
 			continue
 		}
 		if len(msg.ID) > 0 {
 			if call, ok := p.state.takeClient(string(msg.ID)); ok {
-				if err := p.record(call, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
+				if err := p.record(call, outcomeForRPCError(msg.Error), audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
 					p.log.Error("failed to audit server response", "error", err)
 				}
 			}
@@ -311,45 +300,95 @@ func (p *StdioProxy) observeServerMessage(raw []byte) {
 	}
 }
 
-func (p *StdioProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
-	return p.config.Audit.Record(audit.Entry{
-		Direction:  direction,
-		Method:     call.method,
-		RequestID:  call.requestID,
-		ToolName:   call.toolName,
-		Params:     call.params,
-		Result:     result,
-		Error:      rpcErr,
-		DurationMs: time.Since(call.startedAt).Milliseconds(),
-		ClientID:   p.config.ClientID,
-		ServerID:   p.config.ServerID,
+func (p *StdioProxy) newPendingCall(method, requestID, mcpName string, params json.RawMessage, completionDirection string, startedAt time.Time, policyEvidence *audit.PolicyEvidence) pendingCall {
+	toolName := ""
+	if method == "tools/call" {
+		toolName = mcpName
+	}
+	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
+		Method:    method,
+		RequestID: requestID,
+		MCPName:   mcpName,
+		ToolName:  toolName,
+		Params:    params,
+		ClientID:  p.config.ClientID,
+		ServerID:  p.config.ServerID,
+		Principal: staticAuditPrincipal(p.config.ClientID),
+		Policy:    policyEvidence,
+	}, startedAt)
+	if err != nil {
+		p.log.Error("failed to start audit operation", "method", method, "error", err)
+	}
+	return pendingCall{operation: operation, startedAt: startedAt, completionDirection: completionDirection}
+}
+
+func (p *StdioProxy) finalizeAll(outcome audit.Outcome) {
+	p.finalizeCalls(p.state.takeAll(), outcome)
+}
+
+func (p *StdioProxy) finalizeCalls(calls []pendingCall, outcome audit.Outcome) {
+	for _, call := range calls {
+		if err := p.record(call, outcome, call.completionDirection, nil, nil); err != nil {
+			p.log.Error("failed to finalize incomplete audit operation", "outcome", outcome, "error", err)
+		}
+	}
+}
+
+func (p *StdioProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	if call.operation == nil {
+		return fmt.Errorf("proxy: stdio: audit operation unavailable")
+	}
+	return call.operation.Finalize(audit.Completion{
+		Outcome:   outcome,
+		Direction: direction,
+		Result:    result,
+		Error:     rpcErr,
 	})
 }
 
-func (p *StdioProxy) evaluatePolicy(toolName string) policy.Decision {
+func (p *StdioProxy) evaluatePolicy(method, name string) policy.Decision {
 	if p.config.Policy == nil {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
 	return p.config.Policy.Evaluate(policy.Request{
+		Subject:  p.config.ClientID,
 		ClientID: p.config.ClientID,
+		Issuer:   "static",
 		ServerID: p.config.ServerID,
-		ToolName: toolName,
+		Method:   method,
+		Name:     name,
+		ToolName: func() string {
+			if method == "tools/call" {
+				return name
+			}
+			return ""
+		}(),
 	})
 }
 
 func (p *StdioProxy) recordPolicyDecision(decision policy.Decision) {
-	if p.config.Policy == nil || p.config.Metrics == nil {
+	if p.config.Policy == nil || p.config.Metrics == nil || !decision.Applied {
 		return
 	}
 	p.config.Metrics.RecordPolicyDecision(decision.Action)
 }
 
 type pendingCall struct {
-	method    string
-	requestID string
-	toolName  string
-	params    json.RawMessage
-	startedAt time.Time
+	operation           *audit.Operation
+	startedAt           time.Time
+	completionDirection string
+	expectsResponse     bool
+}
+
+func auditPrincipal(principal *auth.Principal) *audit.Principal {
+	if principal == nil {
+		return nil
+	}
+	return &audit.Principal{Subject: principal.Subject, ClientID: principal.ClientID, Issuer: principal.Issuer}
+}
+
+func staticAuditPrincipal(clientID string) *audit.Principal {
+	return &audit.Principal{Subject: clientID, ClientID: clientID, Issuer: "static"}
 }
 
 type rpcState struct {
@@ -365,7 +404,7 @@ func newRPCState() *rpcState {
 	}
 }
 
-func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval time.Duration) {
+func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval time.Duration, onExpired func([]pendingCall)) {
 	if ttl <= 0 {
 		return
 	}
@@ -379,29 +418,62 @@ func (s *rpcState) cleanupLoop(ctx context.Context, ttl time.Duration, interval 
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.purgeExpired(now, ttl)
+			expired := s.takeExpired(now, ttl)
+			if len(expired) > 0 && onExpired != nil {
+				onExpired(expired)
+			}
 		}
 	}
 }
 
 func (s *rpcState) purgeExpired(now time.Time, ttl time.Duration) int {
+	return len(s.takeExpired(now, ttl))
+}
+
+func (s *rpcState) takeExpired(now time.Time, ttl time.Duration) []pendingCall {
 	cutoff := now.Add(-ttl)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	purged := 0
+	var expired []pendingCall
 	for id, call := range s.clientPending {
 		if call.startedAt.Before(cutoff) {
 			delete(s.clientPending, id)
-			purged++
+			expired = append(expired, call)
 		}
 	}
 	for id, call := range s.serverPending {
 		if call.startedAt.Before(cutoff) {
 			delete(s.serverPending, id)
-			purged++
+			expired = append(expired, call)
 		}
 	}
-	return purged
+	return expired
+}
+
+func (s *rpcState) takeClients() []pendingCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := make([]pendingCall, 0, len(s.clientPending))
+	for id, call := range s.clientPending {
+		calls = append(calls, call)
+		delete(s.clientPending, id)
+	}
+	return calls
+}
+
+func (s *rpcState) takeAll() []pendingCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	calls := make([]pendingCall, 0, len(s.clientPending)+len(s.serverPending))
+	for id, call := range s.clientPending {
+		calls = append(calls, call)
+		delete(s.clientPending, id)
+	}
+	for id, call := range s.serverPending {
+		calls = append(calls, call)
+		delete(s.serverPending, id)
+	}
+	return calls
 }
 
 func (s *rpcState) rememberClient(id string, call pendingCall) {

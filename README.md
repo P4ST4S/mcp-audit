@@ -93,20 +93,21 @@ To pin a specific release for reproducible installs, see
 Run in stdio mode:
 
 ```bash
-AUDIT_SECRET="$(openssl rand -hex 32)" \
+MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem /tmp"
 ```
 
 On Windows PowerShell, generate the secret and set it as an environment variable:
 
 ```powershell
-$env:AUDIT_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+$env:MCP_AUDIT_SIGNING_SECRET = -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
 .\mcp-audit.exe --transport stdio --upstream "npx @modelcontextprotocol/server-filesystem C:\Temp"
 ```
 
 Run in HTTP mode:
 
 ```bash
+MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)" \
 mcp-audit --transport http --upstream http://localhost:8080 --port 4422
 ```
 
@@ -129,15 +130,36 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 
 ## Configuration
 
-`mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values, and `AUDIT_SECRET` overrides `audit.secret`.
+`mcp-audit` loads `config.yaml` from the current directory by default. CLI flags override config values. `MCP_AUDIT_SIGNING_SECRET` overrides `audit.secret`; the legacy `AUDIT_SECRET` name remains supported at lower precedence.
+
+Upgrading an existing deployment? Follow the
+[v1.2 migration guide](docs/V1.2_MIGRATION.md) before changing production
+configuration.
+
+For Streamable HTTP clients, the proxy forwards MCP session, cache, and
+multi-round-trip metadata unchanged. When `Mcp-Method`, `Mcp-Name`, or
+`Mcp-Protocol-Version` are present, they are validated against the JSON-RPC
+body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `proxy.transport` | `stdio` | Proxy transport: `stdio` or `http`. |
 | `proxy.upstream` | required | Stdio command or HTTP upstream URL. |
+| `proxy.bind_address` | empty (legacy) | HTTP listen address. The distributed config uses `127.0.0.1`; an omitted value retains all-interface binding with a warning until v2.0.0. |
 | `proxy.port` | `4422` | HTTP listen port. |
 | `proxy.upstream_timeout_ms` | `30000` | HTTP upstream request timeout in milliseconds. |
+| `proxy.http.max_request_body_bytes` | `10485760` | Maximum incoming HTTP request body size. Oversized requests return `413`. |
+| `proxy.http.max_header_bytes` | `1048576` | Maximum incoming HTTP header size. |
+| `proxy.http.read_header_timeout` | `10s` | Time allowed to read request headers. |
+| `proxy.http.read_timeout` | `30s` | Time allowed to read the full request. |
+| `proxy.http.write_timeout` | `30s` | Time allowed to write the response. |
+| `proxy.http.idle_timeout` | `120s` | Keep-alive idle timeout. |
+| `proxy.http.allowed_origins` | empty | Optional exact browser Origin allowlist. Requests without `Origin` remain valid non-browser clients. |
+| `proxy.http.allowed_hosts` | empty | Optional Host allowlist for DNS-rebinding protection. Entries are hostnames or IP addresses with optional ports. |
 | `proxy.forward_headers` | empty | Request headers allowed to bypass the default upstream strip list. Use `["Authorization"]` only when the upstream MCP HTTP server requires bearer-token auth. |
+| `proxy.tls.enabled` | `false` | Serve incoming proxy connections over TLS. Requires `proxy.tls.cert_file` and `proxy.tls.key_file`. |
+| `proxy.tls.cert_file` | empty | PEM certificate chain for incoming TLS connections. |
+| `proxy.tls.key_file` | empty | PEM private key for incoming TLS connections. |
 | `proxy.tls.ca_file` | empty | Optional CA bundle used to verify an HTTPS upstream MCP server. |
 | `proxy.tls.server_name` | empty | Optional TLS server name override for the upstream MCP server. |
 | `proxy.tls.insecure_skip_verify` | `false` | Skip upstream TLS certificate verification. Intended only for local testing. |
@@ -148,11 +170,29 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `proxy.retry.max_interval_ms` | `2000` | Maximum upstream retry backoff. |
 | `proxy.client_id` | `claude-desktop` | Client identifier written to audit entries. |
 | `proxy.server_id` | `filesystem` | Server identifier written to audit entries. |
+| `auth.mode` | `none` | HTTP client authentication mode: `none`, `static_bearer`, or `oidc`. None uses the explicitly configured static principal for local compatibility. |
+| `auth.static.bearer_token` | empty | Pre-shared bearer token for `static_bearer` mode. Prefer `MCP_AUDIT_STATIC_BEARER_TOKEN`; minimum 32 bytes. |
+| `auth.static.subject` | `local` | Trusted subject for the local or static-bearer principal. |
+| `auth.static.client_id` | empty | Principal client identifier. Empty inherits `proxy.client_id`. |
+| `auth.static.issuer` | `static` | Principal issuer label. |
+| `auth.static.roles` | empty | Roles attached to the principal for later policy evaluation. |
+| `auth.static.scopes` | empty | Scopes attached to the principal for later policy evaluation. |
+| `auth.oidc.issuer` | empty | Required exact JWT issuer in `oidc` mode. |
+| `auth.oidc.audience` | empty | Required JWT audience in `oidc` mode. |
+| `auth.oidc.jwks_uri` | empty | Remote JWKS URL. HTTPS is required except on loopback. |
+| `auth.oidc.client_id_claim` | `client_id` | Required claim projected to the principal client ID. |
+| `auth.oidc.roles_claim` | `roles` | Optional string or string-array roles claim. |
+| `auth.oidc.scopes_claim` | `scope` | Optional space-separated string or string-array scopes claim. |
+| `auth.oidc.allowed_methods` | asymmetric methods | Explicit JWT signature algorithm allowlist. |
+| `auth.oidc.clock_skew` | `30s` | Maximum clock skew for `exp` and `nbf` validation. |
+| `auth.oidc.http_timeout` | `5s` | JWKS HTTP fetch and unknown-key refresh timeout. |
+| `auth.oidc.refresh_interval` | `5m` | Background JWKS rotation refresh interval. |
 | `audit.storage` | `jsonl` | Storage backend: `jsonl` or `sqlite`. |
 | `audit.path` | `./audit.jsonl` | JSONL audit log path. |
 | `audit.sqlite_path` | `./audit.db` | SQLite database path. |
-| `audit.sign` | `true` | Enable HMAC-SHA256 signatures when a secret is set. |
-| `audit.secret` | empty | HMAC secret. Prefer `AUDIT_SECRET`. |
+| `audit.sign` | `true` | Enable HMAC-SHA256 signatures. Startup fails unless a non-blank secret is configured. |
+| `audit.secret` | empty | HMAC secret. Prefer `MCP_AUDIT_SIGNING_SECRET`. |
+| `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |
@@ -162,12 +202,13 @@ Prometheus metrics are available at `http://localhost:9091/metrics` by default.
 | `audit.rotation.interval` | empty | Optional time-based JSONL rotation interval: `hourly` or `daily`. Empty disables time-based rotation. |
 | `audit.rotation.max_age_days` | `0` | Delete JSONL archives whose filename rotation timestamp is older than this many days. `0` disables age retention. |
 | `middleware.rate_limit.enabled` | `true` | Enable per-client, per-tool token buckets. |
-| `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per `(client_id, tool_name)`. |
+| `middleware.rate_limit.requests_per_minute` | `60` | Allowed requests per minute per authenticated `(client_id, tool_name)`. |
 | `middleware.redact.enabled` | `true` | Enable JSON key-based PII redaction. |
 | `middleware.redact.patterns` | sensitive keys | Case-insensitive key fragments to redact. |
-| `policy.enabled` | `false` | Enable synchronous allow/deny policy checks for `tools/call`. |
+| `policy.enabled` | `false` | Enable synchronous allow/deny policy checks. |
 | `policy.default_action` | `allow` | Fallback action when no policy rule matches: `allow` or `deny`. |
-| `policy.rules` | empty | Ordered first-match allow/deny rules for tool calls. |
+| `policy.scope` | `tools_only` (legacy) | Methods evaluated by policy: `tools_only` or `all_operations`. The distributed config opts into `all_operations`. |
+| `policy.rules` | empty | Ordered first-match allow/deny rules. Optional `id` is retained as audit provenance. Existing `client_id`, `server_id`, and `tool_name` selectors remain valid; principal selectors are `subject`, `issuer`, `role`, and `scope`, with generic operation selectors `method` and `name`. |
 | `dashboard.enabled` | `true` | Serve the dashboard. |
 | `dashboard.bind_address` | `127.0.0.1` | Dashboard listen address. Set explicitly, for example to `0.0.0.0`, only when the dashboard is protected by network controls or auth. |
 | `dashboard.port` | `9090` | Dashboard listen port. |
@@ -203,6 +244,60 @@ proxy:
 
 Security note: forwarded headers, including secrets like bearer tokens, are transmitted verbatim to the upstream server. Only enable this if you control or trust the upstream MCP server. `Authorization` is the only sensitive header that can be opt-in forwarded because some MCP HTTP servers require it for upstream authentication. `Cookie`, `Set-Cookie`, and `Proxy-Authorization` are always rejected: they represent state destined for other components such as browser sessions or proxy chains and have no legitimate use in MCP request forwarding. If an existing deployment relied on implicit `Authorization` forwarding, add the config above.
 
+### HTTP authentication
+
+HTTP mode can use an explicitly configured local identity, a pre-shared bearer
+token, or an OIDC access token. For a simple authenticated deployment, keep the
+token outside the YAML file:
+
+```bash
+export MCP_AUDIT_STATIC_BEARER_TOKEN="$(openssl rand -hex 32)"
+```
+
+```yaml
+auth:
+  mode: static_bearer
+  static:
+    subject: automation
+    client_id: ci-client
+    issuer: static
+    roles: [operator]
+    scopes: [mcp:read]
+```
+
+OIDC mode validates the JWT signature, exact issuer and audience, expiry, and
+not-before claims using an asymmetric algorithm allowlist and rotating JWKS:
+
+```yaml
+auth:
+  mode: oidc
+  oidc:
+    issuer: https://login.example.com/tenant
+    audience: mcp-audit
+    jwks_uri: https://login.example.com/tenant/.well-known/jwks.json
+    allowed_methods: [RS256]
+```
+
+The inbound `Authorization` header is stripped before upstream forwarding by
+default. `proxy.forward_headers: [Authorization]` is a separate, explicit trust
+decision for an upstream that also requires that credential.
+
+### Incoming TLS
+
+To terminate TLS at the proxy, configure both the certificate chain and private
+key. Incoming TLS uses TLS 1.2 or newer:
+
+```yaml
+proxy:
+  tls:
+    enabled: true
+    cert_file: /etc/mcp-audit/tls.crt
+    key_file: /etc/mcp-audit/tls.key
+```
+
+The other `proxy.tls.*` settings continue to control the outbound connection to
+an HTTPS upstream MCP server.
+
 JSONL rotation is disabled by default and supports size-based and UTC time-based triggers. Rotated archives use UTC timestamps such as `audit.jsonl.20260610T214605Z`; if multiple rotations happen in the same second, numeric suffixes are added. The archive timestamp reflects the wall-clock time of the rotation event, not the cutoff that was crossed. Time-based rotation is append-driven: `mcp-audit` does not start a background timer, so if no writes occur for several days, the active file is not rotated until the next append after the cutoff. Missed cutoffs are not caught up; the next append creates at most one archive.
 
 ```yaml
@@ -232,6 +327,26 @@ CLI flags:
 --log-level    debug | info | warn | error
 ```
 
+### Verify audit evidence
+
+Verify every Integrity v2 or legacy signature in a JSONL or SQLite audit artifact:
+
+```bash
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.jsonl
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.db --json
+```
+
+The verifier detects JSONL and SQLite automatically. Use `--format jsonl` or
+`--format sqlite` to override detection, and `--key-id ID` when the Integrity v2
+records were produced with a non-default key ID. `AUDIT_SECRET` remains a
+compatible fallback for existing deployments.
+
+Text output reports `verified`, `invalid`, `legacy`, and `unsigned` record
+counts. Exit status `0` means every record has a valid Integrity v2 or legacy
+signature, `1` means at least one record is invalid or unsigned, and `2` means
+the command or artifact could not be read. `--json` emits the same result with
+the total count and first verification error for automation.
+
 ## Claude Desktop
 
 Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server:
@@ -248,7 +363,7 @@ Configure Claude Desktop to spawn `mcp-audit` instead of the upstream MCP server
         "npx @modelcontextprotocol/server-filesystem /tmp"
       ],
       "env": {
-        "AUDIT_SECRET": "replace-with-a-long-random-secret"
+        "MCP_AUDIT_SIGNING_SECRET": "replace-with-a-long-random-secret"
       }
     }
   }
@@ -297,21 +412,32 @@ For a ready-made Prometheus + Grafana stack, see [examples/docker-compose-observ
 
 ## Policy Engine
 
-`mcp-audit` can enforce synchronous allow/deny rules before a `tools/call` reaches the upstream MCP server. Denied calls return a JSON-RPC error and are still written to the audit log.
+`mcp-audit` enforces ordered allow/deny rules before an operation reaches the
+upstream MCP server. `policy.scope: tools_only` preserves the legacy behavior;
+`all_operations` evaluates every client-originated MCP method. Denied operations
+return JSON-RPC error `-32030` and are still written to the audit log.
 
 ```yaml
 policy:
   enabled: true
+  scope: all_operations
   default_action: allow
   rules:
-    - action: deny
-      client_id: claude-desktop
+    - id: RESOURCE-001
+      action: deny
+      issuer: https://login.example.com/tenant
+      role: operator
       server_id: filesystem
-      tool_name: delete_file
-      reason: "Destructive filesystem operations are blocked"
+      method: resources/read
+      name: file:///restricted
+      reason: "Restricted resource"
 ```
 
-Rules are evaluated in order. Empty fields and `*` match any value, so `default_action: deny` can be used with explicit allow rules for stricter deployments.
+Rules are evaluated in order. Empty fields and `*` match any value. Principal
+selectors are `subject`, `issuer`, `role`, and `scope`; operation selectors are
+`method` and `name`. Existing `client_id`, `server_id`, and `tool_name` rules
+remain valid. `default_action: deny` can be paired with explicit allow rules for
+stricter deployments. Set a rule `id` when durable audit provenance is needed.
 
 ## OpenTelemetry
 
@@ -339,7 +465,11 @@ Exporter health is visible through Prometheus metrics under the `mcp_audit_otel_
 
 ## Audit Entries
 
-Each stored entry includes a ULID, timestamp, direction, transport, JSON-RPC method, tool name when present, redacted params/result, JSON-RPC error when present, duration, client/server identifiers, and an optional HMAC-SHA256 signature.
+Each terminal entry includes a ULID, UUIDv7 audit-operation identifier, outcome,
+timestamp, direction, transport, JSON-RPC method and request ID, operation name,
+redacted params/result, JSON-RPC error when present, duration, client/server
+identifiers, and a minimal authenticated principal. Signed entries contain both
+the compatible legacy signature and additive Integrity v2 metadata.
 
 Example JSONL entry:
 
@@ -347,9 +477,13 @@ Example JSONL entry:
 {
   "id": "01HY8G6Y8S6W9K6ZD7VJ4Q8X4R",
   "timestamp": "2026-05-25T12:34:56Z",
-  "direction": "client_to_server",
-  "transport": "stdio",
+  "audit_operation_id": "019d2f6e-47ad-75ad-b506-b7990d8c11ba",
+  "outcome": "success",
+  "direction": "server→client",
+  "transport": "http",
   "method": "tools/call",
+  "request_id": "42",
+  "mcp_name": "read_file",
   "tool_name": "read_file",
   "params": {
     "name": "read_file",
@@ -358,18 +492,34 @@ Example JSONL entry:
       "token": "[REDACTED]"
     }
   },
+  "result": {"content": "ok"},
   "duration_ms": 18,
-  "client_id": "claude-desktop",
+  "client_id": "oidc-client",
   "server_id": "filesystem",
-  "signature": "hmac-sha256:..."
+  "principal": {
+    "subject": "alice",
+    "client_id": "oidc-client",
+    "issuer": "https://login.example.com/tenant"
+  },
+  "policy": {
+    "decision": "allow",
+    "rule_id": "TOOLS-001"
+  },
+  "signature": "0123abcd...",
+  "integrity": {
+    "version": 2,
+    "algorithm": "hmac-sha256",
+    "key_id": "default",
+    "signature": "4567efab..."
+  }
 }
 ```
 
-The signature covers:
-
-```text
-id + timestamp + method + tool_name + raw_params
-```
+The legacy signature keeps its original five-field contract. Integrity v2 uses
+RFC 8785 JSON canonicalization to authenticate the complete critical record,
+including the outcome, response or error, direction, and principal. See
+[Audit integrity formats](docs/AUDIT_INTEGRITY.md) for the exact protected
+field set and compatibility rules.
 
 ## Roadmap
 

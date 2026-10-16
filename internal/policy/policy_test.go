@@ -8,7 +8,7 @@ func TestEngineReturnsFirstMatchingRule(t *testing.T) {
 		DefaultAction: ActionAllow,
 		Rules: []Rule{
 			{Action: ActionAllow, ClientID: "other", ToolName: "delete_file"},
-			{Action: ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
+			{ID: "SEC-014", Action: ActionDeny, ClientID: "claude-desktop", ServerID: "filesystem", ToolName: "delete_file", Reason: "destructive tool blocked"},
 		},
 	})
 	if err != nil {
@@ -26,6 +26,9 @@ func TestEngineReturnsFirstMatchingRule(t *testing.T) {
 	}
 	if decision.RuleIndex != 1 {
 		t.Fatalf("rule index = %d, want 1", decision.RuleIndex)
+	}
+	if decision.RuleID != "SEC-014" {
+		t.Fatalf("rule ID = %q, want SEC-014", decision.RuleID)
 	}
 	if decision.Reason != "destructive tool blocked" {
 		t.Fatalf("reason = %q", decision.Reason)
@@ -154,5 +157,102 @@ func TestEvaluateWildcardMatchesAnyValue(t *testing.T) {
 	}
 	if engine.Evaluate(Request{ClientID: "any", ToolName: "any"}).Allowed {
 		t.Fatal("wildcard rule should deny any client/tool")
+	}
+}
+
+func TestEngineMatchesAuthenticatedPrincipalAndOperation(t *testing.T) {
+	engine, err := NewEngine(Config{
+		Enabled:       true,
+		DefaultAction: ActionAllow,
+		Rules: []Rule{{
+			Action:   ActionDeny,
+			Subject:  "alice",
+			ClientID: "client-1",
+			Issuer:   "https://issuer.example.com",
+			Role:     "operator",
+			Scope:    "tools:delete",
+			ServerID: "filesystem",
+			Method:   "tools/call",
+			Name:     "delete_file",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	request := Request{
+		Subject:  "alice",
+		ClientID: "client-1",
+		Issuer:   "https://issuer.example.com",
+		Roles:    []string{"reader", "operator"},
+		Scopes:   []string{"tools:read", "tools:delete"},
+		ServerID: "filesystem",
+		Method:   "tools/call",
+		Name:     "delete_file",
+		ToolName: "delete_file",
+	}
+	if engine.Evaluate(request).Allowed {
+		t.Fatal("matching authenticated principal was allowed")
+	}
+	request.Subject = "bob"
+	if !engine.Evaluate(request).Allowed {
+		t.Fatal("non-matching subject was denied")
+	}
+	request.Subject = "alice"
+	request.Scopes = []string{"tools:read"}
+	if !engine.Evaluate(request).Allowed {
+		t.Fatal("principal without required scope was denied by non-matching rule")
+	}
+}
+
+func TestEngineScopePreservesLegacyAndEnablesAllOperations(t *testing.T) {
+	legacy, err := NewEngine(Config{Enabled: true, DefaultAction: ActionDeny, Scope: ScopeToolsOnly})
+	if err != nil {
+		t.Fatalf("new legacy engine: %v", err)
+	}
+	resource := Request{Method: "resources/read", Name: "file:///tmp/a"}
+	decision := legacy.Evaluate(resource)
+	if !decision.Allowed || decision.Applied {
+		t.Fatalf("legacy resource decision = %#v", decision)
+	}
+
+	all, err := NewEngine(Config{Enabled: true, DefaultAction: ActionDeny, Scope: ScopeAllOperations})
+	if err != nil {
+		t.Fatalf("new all-operations engine: %v", err)
+	}
+	decision = all.Evaluate(resource)
+	if decision.Allowed || !decision.Applied {
+		t.Fatalf("all-operations resource decision = %#v", decision)
+	}
+}
+
+func TestEngineAllOperationsMatchesEveryMCPFamily(t *testing.T) {
+	families := []Request{
+		{Method: "tools/call", Name: "read_file", ToolName: "read_file"},
+		{Method: "resources/read", Name: "file:///tmp/a"},
+		{Method: "prompts/get", Name: "review"},
+		{Method: "completion/complete", Name: "review"},
+		{Method: "logging/setLevel"},
+		{Method: "server/discover"},
+		{Method: "tasks/get", Name: "task-1"},
+		{Method: "extensions/acme.run", Name: "job"},
+	}
+	for _, request := range families {
+		engine, err := NewEngine(Config{
+			Enabled: true,
+			Scope:   ScopeAllOperations,
+			Rules:   []Rule{{Action: ActionDeny, Method: request.Method, Name: request.Name}},
+		})
+		if err != nil {
+			t.Fatalf("new engine for %s: %v", request.Method, err)
+		}
+		if decision := engine.Evaluate(request); decision.Allowed || !decision.Applied {
+			t.Fatalf("%s decision = %#v", request.Method, decision)
+		}
+	}
+}
+
+func TestNewEngineRejectsInvalidScope(t *testing.T) {
+	if _, err := NewEngine(Config{Enabled: true, Scope: "everything"}); err == nil {
+		t.Fatal("expected invalid scope error")
 	}
 }

@@ -35,3 +35,19 @@ func (s *Signer) Sign(entry Entry) string {
 	mac.Write(entry.Params)
 	return hex.EncodeToString(mac.Sum(nil))
 }
+
+// Verify reports whether entry's legacy v1 signature is valid.
+func (s *Signer) Verify(entry Entry) bool {
+	if !s.Enabled() || entry.Signature == "" {
+		return false
+	}
+	provided, err := hex.DecodeString(entry.Signature)
+	if err != nil {
+		return false
+	}
+	expected, err := hex.DecodeString(s.Sign(entry))
+	if err != nil {
+		return false
+	}
+	return hmac.Equal(provided, expected)
+}

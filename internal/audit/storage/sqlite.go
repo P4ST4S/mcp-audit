@@ -45,10 +45,13 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS audit_entries (
 			id TEXT PRIMARY KEY,
 			timestamp TEXT NOT NULL,
+			audit_operation_id TEXT,
+			outcome TEXT,
 			direction TEXT NOT NULL,
 			transport TEXT NOT NULL,
 			method TEXT NOT NULL,
 			request_id TEXT,
+			mcp_name TEXT,
 			tool_name TEXT,
 			params TEXT,
 			result TEXT,
@@ -56,7 +59,10 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 			duration_ms INTEGER NOT NULL,
 			client_id TEXT NOT NULL,
 			server_id TEXT NOT NULL,
-			signature TEXT
+			principal TEXT,
+			policy TEXT,
+			signature TEXT,
+			integrity TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_timestamp ON audit_entries(timestamp)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_method ON audit_entries(method)`,
@@ -71,6 +77,30 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN request_id TEXT`); err != nil &&
 		!strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("audit: sqlite: migrate request_id: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN principal TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate principal: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN mcp_name TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate mcp_name: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN policy TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate policy: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN audit_operation_id TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate audit_operation_id: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN outcome TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate outcome: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE audit_entries ADD COLUMN integrity TEXT`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("audit: sqlite: migrate integrity: %w", err)
 	}
 	return nil
 }
@@ -92,9 +122,9 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
 	}
 	stmt, err := tx.Prepare(`INSERT INTO audit_entries (
-		id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
-		duration_ms, client_id, server_id, signature
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		id, timestamp, audit_operation_id, outcome, direction, transport, method, request_id, mcp_name, tool_name, params, result, error,
+		duration_ms, client_id, server_id, principal, policy, signature, integrity
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return fmt.Errorf("audit: sqlite: prepare batch: %w", err)
@@ -110,13 +140,40 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		if entry.Error == nil {
 			errorJSON = nil
 		}
+		principalJSON, err := json.Marshal(entry.Principal)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("audit: sqlite: marshal principal: %w", err)
+		}
+		if entry.Principal == nil {
+			principalJSON = nil
+		}
+		policyJSON, err := json.Marshal(entry.Policy)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("audit: sqlite: marshal policy evidence: %w", err)
+		}
+		if entry.Policy == nil {
+			policyJSON = nil
+		}
+		integrityJSON, err := json.Marshal(entry.Integrity)
+		if err != nil {
+			_ = tx.Rollback()
+			return fmt.Errorf("audit: sqlite: marshal integrity: %w", err)
+		}
+		if entry.Integrity == nil {
+			integrityJSON = nil
+		}
 		_, err = stmt.Exec(
 			entry.ID,
 			entry.Timestamp.UTC().Format(time.RFC3339Nano),
+			entry.AuditOperationID,
+			entry.Outcome,
 			entry.Direction,
 			entry.Transport,
 			entry.Method,
 			entry.RequestID,
+			entry.MCPName,
 			entry.ToolName,
 			string(entry.Params),
 			string(entry.Result),
@@ -124,7 +181,10 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 			entry.DurationMs,
 			entry.ClientID,
 			entry.ServerID,
+			string(principalJSON),
+			string(policyJSON),
 			entry.Signature,
+			string(integrityJSON),
 		)
 		if err != nil {
 			_ = tx.Rollback()
@@ -139,8 +199,8 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 
 // Query returns recent entries matching filter.
 func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
-	rows, err := s.db.Query(`SELECT id, timestamp, direction, transport, method, request_id, tool_name, params, result, error,
-		duration_ms, client_id, server_id, signature
+	rows, err := s.db.Query(`SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, COALESCE(request_id, ''), COALESCE(mcp_name, ''), tool_name, params, result, error,
+		duration_ms, client_id, server_id, principal, policy, signature, integrity
 		FROM audit_entries
 		ORDER BY timestamp DESC
 		LIMIT 10000`)
@@ -152,14 +212,17 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 	var entries []audit.Entry
 	for rows.Next() {
 		var entry audit.Entry
-		var timestamp, params, result, rpcErr sql.NullString
+		var timestamp, operationID, outcome, params, result, rpcErr, principal, policyEvidence, integrityJSON sql.NullString
 		if err := rows.Scan(
 			&entry.ID,
 			&timestamp,
+			&operationID,
+			&outcome,
 			&entry.Direction,
 			&entry.Transport,
 			&entry.Method,
 			&entry.RequestID,
+			&entry.MCPName,
 			&entry.ToolName,
 			&params,
 			&result,
@@ -167,7 +230,10 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			&entry.DurationMs,
 			&entry.ClientID,
 			&entry.ServerID,
+			&principal,
+			&policyEvidence,
 			&entry.Signature,
+			&integrityJSON,
 		); err != nil {
 			return nil, fmt.Errorf("audit: sqlite: scan: %w", err)
 		}
@@ -176,6 +242,12 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			if err == nil {
 				entry.Timestamp = parsed
 			}
+		}
+		if operationID.Valid {
+			entry.AuditOperationID = operationID.String
+		}
+		if outcome.Valid {
+			entry.Outcome = audit.Outcome(outcome.String)
 		}
 		if params.Valid {
 			entry.Params = json.RawMessage(params.String)
@@ -187,6 +259,23 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			var decoded audit.RPCError
 			if err := json.Unmarshal([]byte(rpcErr.String), &decoded); err == nil {
 				entry.Error = &decoded
+			}
+		}
+		if principal.Valid && principal.String != "" && principal.String != "null" {
+			var decoded audit.Principal
+			if err := json.Unmarshal([]byte(principal.String), &decoded); err == nil {
+				entry.Principal = &decoded
+			}
+		}
+		if policyEvidence.Valid && policyEvidence.String != "" && policyEvidence.String != "null" {
+			var decoded audit.PolicyEvidence
+			if err := json.Unmarshal([]byte(policyEvidence.String), &decoded); err == nil {
+				entry.Policy = &decoded
+			}
+		}
+		if integrityJSON.Valid && integrityJSON.String != "" && integrityJSON.String != "null" {
+			if err := json.Unmarshal([]byte(integrityJSON.String), &entry.Integrity); err != nil {
+				return nil, fmt.Errorf("audit: sqlite: decode integrity: %w", err)
 			}
 		}
 		if audit.MatchFilter(entry, filter) {

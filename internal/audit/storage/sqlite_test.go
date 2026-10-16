@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 )
 
 func newSQLiteStore(t *testing.T) *SQLiteStore {
@@ -335,6 +337,66 @@ func TestSQLiteStoreInitMigratesRequestIDColumn(t *testing.T) {
 	defer store2.Close()
 }
 
+func TestSQLiteStoreQueriesMigratedLegacyRows(t *testing.T) {
+	t.Parallel()
+	for _, withRequestID := range []bool{false, true} {
+		t.Run(fmt.Sprintf("request_id=%t", withRequestID), func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "audit.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			_, err = db.Exec(`CREATE TABLE audit_entries (
+				id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, direction TEXT NOT NULL,
+				transport TEXT NOT NULL, method TEXT NOT NULL, tool_name TEXT,
+				params TEXT, result TEXT, error TEXT, duration_ms INTEGER NOT NULL,
+				client_id TEXT NOT NULL, server_id TEXT NOT NULL, signature TEXT
+			)`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if withRequestID {
+				if _, err := db.Exec(`ALTER TABLE audit_entries ADD COLUMN request_id TEXT`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, err = db.Exec(`INSERT INTO audit_entries
+				(id, timestamp, direction, transport, method, tool_name, duration_ms, client_id, server_id, signature)
+				VALUES ('legacy', '2026-06-11T12:00:00Z', 'client→server', 'stdio', 'tools/call', 'echo', 1, 'c1', 's1', 'legacy-signature')`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantRequestID := ""
+			if withRequestID {
+				wantRequestID = "rpc-legacy"
+				if _, err := db.Exec(`UPDATE audit_entries SET request_id = ?`, wantRequestID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewSQLiteStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = store.Close() })
+			entries, err := store.Query(audit.QueryFilter{})
+			if err != nil {
+				t.Fatalf("Query migrated rows: %v", err)
+			}
+			if len(entries) != 1 || entries[0].ID != "legacy" || entries[0].ToolName != "echo" || entries[0].Signature != "legacy-signature" {
+				t.Fatalf("legacy evidence changed: %+v", entries)
+			}
+			if entries[0].MCPName != "" || entries[0].RequestID != wantRequestID {
+				t.Fatalf("unexpected migrated fields: %+v", entries[0])
+			}
+		})
+	}
+}
+
 func TestSQLiteStoreInitIdempotent(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "audit.db")
@@ -369,6 +431,100 @@ func TestSQLiteStorePersistsRequestID(t *testing.T) {
 	}
 	if entries[0].RequestID != "rpc-42" {
 		t.Fatalf("expected RequestID=rpc-42, got %q", entries[0].RequestID)
+	}
+}
+
+func TestSQLiteStorePersistsPrincipalProjection(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+	want := &audit.Principal{Subject: "alice", ClientID: "client-1", Issuer: "https://issuer.example.com"}
+	mustSQLiteAppend(t, store, audit.Entry{ID: "principal-1", ClientID: "client-1", ServerID: "s1", Principal: want})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Principal == nil || *entries[0].Principal != *want {
+		t.Fatalf("principal = %#v", entries)
+	}
+}
+
+func TestSQLiteStorePersistsMCPNameAndPolicyEvidence(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:       "policy-1",
+		Method:   "resources/read",
+		MCPName:  "file:///restricted",
+		ClientID: "client-1",
+		ServerID: "filesystem",
+		Policy:   &audit.PolicyEvidence{Decision: "deny", RuleID: "SEC-014"},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].MCPName != "file:///restricted" || entries[0].Policy == nil {
+		t.Fatalf("MCP policy evidence did not round-trip: %#v", entries)
+	}
+	if entries[0].Policy.Decision != "deny" || entries[0].Policy.RuleID != "SEC-014" {
+		t.Fatalf("policy evidence = %#v", entries[0].Policy)
+	}
+}
+
+func TestSQLiteStorePersistsOperationLifecycle(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:               "operation-1",
+		AuditOperationID: "019d2f6e-47ad-75ad-b506-b7990d8c11ba",
+		Outcome:          audit.OutcomeTimeout,
+		ClientID:         "c1",
+		ServerID:         "s1",
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].AuditOperationID != "019d2f6e-47ad-75ad-b506-b7990d8c11ba" {
+		t.Fatalf("operation ID = %q", entries[0].AuditOperationID)
+	}
+	if entries[0].Outcome != audit.OutcomeTimeout {
+		t.Fatalf("outcome = %q, want timeout", entries[0].Outcome)
+	}
+}
+
+func TestSQLiteStorePersistsIntegrityMetadata(t *testing.T) {
+	t.Parallel()
+	store := newSQLiteStore(t)
+
+	mustSQLiteAppend(t, store, audit.Entry{
+		ID:       "integrity-1",
+		ClientID: "c1",
+		ServerID: "s1",
+		Integrity: &integrity.Metadata{
+			Version:   integrity.VersionV2,
+			Algorithm: integrity.AlgorithmHMACV2,
+			KeyID:     "audit-prod",
+			Signature: "abcdef",
+		},
+	})
+
+	entries, err := store.Query(audit.QueryFilter{})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Integrity == nil {
+		t.Fatalf("integrity metadata did not round-trip: %#v", entries)
+	}
+	if entries[0].Integrity.KeyID != "audit-prod" {
+		t.Fatalf("key ID = %q, want audit-prod", entries[0].Integrity.KeyID)
 	}
 }
 

@@ -4,16 +4,69 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-16
+
 ### Added
 
+- HTTP security principals with explicit local identity and optional static
+  bearer authentication backed by constant-time token comparison.
+- Principal-aware policy selectors for subject, issuer, role, scope, method,
+  and operation name, plus minimal principal and policy-decision evidence in
+  JSONL and SQLite.
+- Generic `mcp_name` audit evidence for tool, resource, prompt, task, and
+  extension operations while preserving `tool_name` compatibility.
+- Optional policy enforcement across all client-originated MCP operation
+  families, with a compatibility-preserving `tools_only` default.
+- OIDC resource-server authentication with rotating JWKS, explicit asymmetric
+  algorithm allowlisting, and mandatory signature, issuer, audience, expiry,
+  and not-before validation.
+- Optional incoming TLS for the HTTP proxy, with a TLS 1.2 minimum and
+  startup validation of the configured certificate and private key.
+- HTTP proxy request-body and header limits, complete server timeouts, optional
+  browser Origin validation, Host validation for DNS-rebinding protection, and
+  `mcp_audit_http_request_rejections_total` metrics.
+- `proxy.bind_address` with an explicit `127.0.0.1` value in the distributed
+  config. Omitted legacy configs retain all-interface binding with a warning.
+- MCP 2026-07-28 request inspection and Streamable HTTP forwarding, including
+  consistency validation for `Mcp-Method`, `Mcp-Name`, and
+  `Mcp-Protocol-Version` headers.
+- Terminal audit `outcome` values and UUIDv7 `audit_operation_id` correlation,
+  with an exactly-once operation finalizer shared by HTTP and stdio transports.
+- Additive Integrity v2 metadata using RFC 8785 JCS and HMAC-SHA256 to protect
+  the complete critical audit record, including the authenticated principal,
+  while preserving legacy signatures.
+- `audit.signing.key_id` for identifying the Integrity v2 verification key.
+- `mcp-audit verify` for streaming verification of Integrity v2 and legacy
+  signatures in JSONL and SQLite audit artifacts, with text and JSON output.
+- Complete stdio terminal auditing for pending-call expiry, malformed upstream
+  messages, upstream termination/write failures, cancellation, and client
+  disconnects.
+- Complete HTTP terminal auditing for upstream connection failures, timeouts,
+  malformed and incomplete responses, SSE failures, cancellations, and client
+  disconnects. HTTP notifications are finalized only after the upstream result.
+- Security invariants and release gates for v1.2.0.
+- A v1.2 migration guide covering signing, network exposure, HTTP
+  authentication, policy scope, TLS, MCP metadata, and evidence verification.
 - Installation cookbook with platform-specific notes in `INSTALL.md`.
 - VS Code stdio configuration example under `examples/vscode/`.
 - Claude Desktop stdio configuration example under `examples/claude-desktop/`.
 
 ### Changed
 
-- Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.4`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+- Audit signing now fails closed during configuration validation: `audit.sign`
+  set to `true` requires a non-blank secret before any service or upstream
+  process starts. `MCP_AUDIT_SIGNING_SECRET` is the preferred environment
+  variable; legacy `AUDIT_SECRET` remains supported.
+- Bump the Go toolchain pin in `go.mod` from `go1.22.12` to `go1.26.9`. The minimum supported Go version (`go 1.22` directive) is unchanged, so existing users with a local Go 1.22+ toolchain can still build from source.
+- Align Docker builds with Go 1.26.9 and use the supported Alpine 3.24 runtime.
 - Install snippets in `README.md` and `INSTALL.md` now resolve to the latest GitHub Release dynamically. To pin a specific release, set the `version` shell variable before running snippets. See `INSTALL.md` "Choosing a version".
+
+### Fixed
+
+- Preserve access to legacy SQLite audit rows after migration when optional
+  request ID or MCP name columns contain NULL.
+- Reject malformed bracketed and IPv6 values, plus hostnames with repeated
+  trailing dots, in HTTP Origin and Host allowlists.
 
 ## [1.1.0] - 2026-06-11
 
@@ -178,7 +231,9 @@ Without this setting, authenticated upstreams may return `401 Unauthorized`; `mc
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.7.0...v0.8.0

@@ -31,6 +31,11 @@ $version = "1.1.0"
 When `version` is set, snippets below build URLs from it. When `version` is
 unset, snippets resolve to GitHub's `latest` release.
 
+When upgrading an existing deployment to v1.2, review the
+[v1.2 migration guide](docs/V1.2_MIGRATION.md) before rollout. It covers the
+fail-closed signing requirement, explicit HTTP exposure, authentication, policy
+scope, and evidence verification.
+
 ## Prerequisites
 
 - `mcp-audit` itself has no runtime dependency when installed from a prebuilt
@@ -38,8 +43,8 @@ unset, snippets resolve to GitHub's `latest` release.
 - The stdio examples often launch an upstream MCP server via `npx`, which
   requires [Node.js](https://nodejs.org/) 18+ on `PATH`. This is only needed
   for that example upstream, not for `mcp-audit`.
-- `AUDIT_SECRET` is recommended when signing audit entries. Prefer setting it
-  through the environment instead of storing secrets in config files.
+- `MCP_AUDIT_SIGNING_SECRET` is required when `audit.sign` is enabled and no
+  secret is stored in config. Prefer the environment over config files.
 
 ## Linux
 
@@ -171,7 +176,7 @@ container restarts.
 
 ```bash
 docker run --rm \
-  -e AUDIT_SECRET=change-me \
+  -e MCP_AUDIT_SIGNING_SECRET=change-me \
   -v "$PWD/audit-data:/data" \
   ghcr.io/p4st4s/mcp-audit:${VERSION:-latest} \
   --version
@@ -221,6 +226,17 @@ release and verify the archive before extracting it. Linux commonly uses
 `sha256sum`, macOS uses `shasum -a 256`, and Windows can use `Get-FileHash` as
 shown above.
 
+After the proxy records a representative operation, verify the audit artifact
+with the same secret used for signing:
+
+```bash
+MCP_AUDIT_SIGNING_SECRET="your-signing-secret" mcp-audit verify audit.jsonl
+```
+
+The command also detects SQLite artifacts. Exit status `0` means every record
+is valid, `1` means at least one record is invalid or unsigned, and `2` means a
+usage or input failure.
+
 ## Troubleshooting
 
 ### Port already bound
@@ -232,22 +248,25 @@ Prometheus metrics use `9091`.
 mcp-audit --transport http --upstream http://localhost:8080 --port 4423
 ```
 
-### `AUDIT_SECRET` missing
+### Signing secret missing
 
-Unsigned audit entries are possible, but production deployments should set
-`AUDIT_SECRET` so audit rows can be signed. Keep the value outside config files:
+When `audit.sign` is `true`, the process refuses to start without a non-blank
+secret. Keep the value outside config files:
 
 ```bash
-export AUDIT_SECRET="$(openssl rand -hex 32)"
+export MCP_AUDIT_SIGNING_SECRET="$(openssl rand -hex 32)"
 ```
 
 On PowerShell:
 
 ```powershell
-$env:AUDIT_SECRET = -join (
+$env:MCP_AUDIT_SIGNING_SECRET = -join (
   (1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) }
 )
 ```
+
+The legacy `AUDIT_SECRET` environment variable remains supported. If both are
+set, `MCP_AUDIT_SIGNING_SECRET` takes precedence.
 
 ### Upstream not reachable
 

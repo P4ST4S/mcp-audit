@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -15,7 +16,9 @@ import (
 	"unicode"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	auditintegrity "github.com/P4ST4S/mcp-audit/internal/audit/integrity"
 	"github.com/P4ST4S/mcp-audit/internal/audit/storage"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/dashboard"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
 	"github.com/P4ST4S/mcp-audit/internal/metrics"
@@ -32,14 +35,34 @@ var (
 	date    = "unknown"
 )
 
+const (
+	preferredSigningSecretEnv = "MCP_AUDIT_SIGNING_SECRET"
+	legacySigningSecretEnv    = "AUDIT_SECRET"
+	recommendedSecretBytes    = 32
+)
+
 type appConfig struct {
 	Proxy struct {
 		Transport         string   `mapstructure:"transport"`
 		Upstream          string   `mapstructure:"upstream"`
+		BindAddress       string   `mapstructure:"bind_address"`
 		Port              int      `mapstructure:"port"`
 		UpstreamTimeoutMS int      `mapstructure:"upstream_timeout_ms"`
 		ForwardHeaders    []string `mapstructure:"forward_headers"`
-		TLS               struct {
+		HTTP              struct {
+			MaxRequestBodyBytes int64         `mapstructure:"max_request_body_bytes"`
+			MaxHeaderBytes      int           `mapstructure:"max_header_bytes"`
+			ReadHeaderTimeout   time.Duration `mapstructure:"read_header_timeout"`
+			ReadTimeout         time.Duration `mapstructure:"read_timeout"`
+			WriteTimeout        time.Duration `mapstructure:"write_timeout"`
+			IdleTimeout         time.Duration `mapstructure:"idle_timeout"`
+			AllowedOrigins      []string      `mapstructure:"allowed_origins"`
+			AllowedHosts        []string      `mapstructure:"allowed_hosts"`
+		} `mapstructure:"http"`
+		TLS struct {
+			Enabled            bool   `mapstructure:"enabled"`
+			CertFile           string `mapstructure:"cert_file"`
+			KeyFile            string `mapstructure:"key_file"`
 			CAFile             string `mapstructure:"ca_file"`
 			ServerName         string `mapstructure:"server_name"`
 			InsecureSkipVerify bool   `mapstructure:"insecure_skip_verify"`
@@ -54,13 +77,39 @@ type appConfig struct {
 		ClientID string `mapstructure:"client_id"`
 		ServerID string `mapstructure:"server_id"`
 	} `mapstructure:"proxy"`
+	Auth struct {
+		Mode   string `mapstructure:"mode"`
+		Static struct {
+			BearerToken string   `mapstructure:"bearer_token"`
+			Subject     string   `mapstructure:"subject"`
+			ClientID    string   `mapstructure:"client_id"`
+			Issuer      string   `mapstructure:"issuer"`
+			Roles       []string `mapstructure:"roles"`
+			Scopes      []string `mapstructure:"scopes"`
+		} `mapstructure:"static"`
+		OIDC struct {
+			Issuer          string        `mapstructure:"issuer"`
+			Audience        string        `mapstructure:"audience"`
+			JWKSURI         string        `mapstructure:"jwks_uri"`
+			ClientIDClaim   string        `mapstructure:"client_id_claim"`
+			RolesClaim      string        `mapstructure:"roles_claim"`
+			ScopesClaim     string        `mapstructure:"scopes_claim"`
+			AllowedMethods  []string      `mapstructure:"allowed_methods"`
+			ClockSkew       time.Duration `mapstructure:"clock_skew"`
+			HTTPTimeout     time.Duration `mapstructure:"http_timeout"`
+			RefreshInterval time.Duration `mapstructure:"refresh_interval"`
+		} `mapstructure:"oidc"`
+	} `mapstructure:"auth"`
 	Audit struct {
 		Storage    string `mapstructure:"storage"`
 		Path       string `mapstructure:"path"`
 		SQLitePath string `mapstructure:"sqlite_path"`
 		Sign       bool   `mapstructure:"sign"`
 		Secret     string `mapstructure:"secret"`
-		Async      struct {
+		Signing    struct {
+			KeyID string `mapstructure:"key_id"`
+		} `mapstructure:"signing"`
+		Async struct {
 			Enabled         bool `mapstructure:"enabled"`
 			QueueSize       int  `mapstructure:"queue_size"`
 			BatchSize       int  `mapstructure:"batch_size"`
@@ -86,6 +135,7 @@ type appConfig struct {
 	Policy struct {
 		Enabled       bool          `mapstructure:"enabled"`
 		DefaultAction string        `mapstructure:"default_action"`
+		Scope         string        `mapstructure:"scope"`
 		Rules         []policy.Rule `mapstructure:"rules"`
 	} `mapstructure:"policy"`
 	Dashboard struct {
@@ -141,6 +191,9 @@ type cliFlags struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "verify" {
+		os.Exit(runVerifyCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	flags := parseFlags()
 	if flags.version {
 		fmt.Println(versionString())
@@ -153,6 +206,12 @@ func main() {
 		os.Exit(1)
 	}
 	logger = newLogger(configuredLogLevel(flags))
+	if config.Proxy.Transport == "http" && strings.TrimSpace(config.Proxy.BindAddress) == "" {
+		logger.Warn("proxy.bind_address is not configured; legacy all-interface binding is active")
+	}
+	if config.Audit.Sign && len([]byte(config.Audit.Secret)) < recommendedSecretBytes {
+		logger.Warn("audit signing secret is shorter than the recommended minimum", "recommended_bytes", recommendedSecretBytes)
+	}
 
 	metricsRecorder, metricsServer, err := newMetrics(config, logger)
 	if err != nil {
@@ -185,13 +244,11 @@ func main() {
 		}
 	}()
 
-	secret := config.Audit.Secret
-	if envSecret := os.Getenv("AUDIT_SECRET"); envSecret != "" {
-		secret = envSecret
-	}
 	var signer *audit.Signer
+	var integritySigner *auditintegrity.Signer
 	if config.Audit.Sign {
-		signer = audit.NewSigner(secret)
+		signer = audit.NewSigner(config.Audit.Secret)
+		integritySigner = auditintegrity.NewSigner(config.Audit.Secret, config.Audit.Signing.KeyID)
 	}
 	redactor := middleware.NewRedactor(config.Middleware.Redact.Enabled, config.Middleware.Redact.Patterns)
 	policyEngine, err := newPolicy(config)
@@ -200,17 +257,30 @@ func main() {
 		os.Exit(1)
 	}
 	auditLogger := audit.NewLogger(audit.LoggerConfig{
-		Store:     store,
-		Signer:    signer,
-		Redactor:  redactor,
-		Log:       logger,
-		Transport: config.Proxy.Transport,
-		ClientID:  config.Proxy.ClientID,
-		ServerID:  config.Proxy.ServerID,
-		Metrics:   metricsRecorder,
-		Trace:     traceExporter,
+		Store:           store,
+		Signer:          signer,
+		IntegritySigner: integritySigner,
+		Redactor:        redactor,
+		Log:             logger,
+		Transport:       config.Proxy.Transport,
+		ClientID:        config.Proxy.ClientID,
+		ServerID:        config.Proxy.ServerID,
+		Metrics:         metricsRecorder,
+		Trace:           traceExporter,
 	})
 	limiter := middleware.NewRateLimiter(config.Middleware.RateLimit.Enabled, config.Middleware.RateLimit.RequestsPerMinute)
+	authenticator, err := newAuthenticator(config)
+	if err != nil {
+		logger.Error("failed to initialize client authentication", "error", err)
+		os.Exit(1)
+	}
+	if closer, ok := authenticator.(interface{ Close() error }); ok {
+		defer func() {
+			if err := closer.Close(); err != nil {
+				logger.Warn("failed to close client authenticator", "error", err)
+			}
+		}()
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -245,10 +315,25 @@ func main() {
 		err = stdio.Run(ctx)
 	case "http":
 		httpProxy, err := proxy.NewHTTPProxy(proxy.HTTPConfig{
-			Upstream:          config.Proxy.Upstream,
-			Port:              config.Proxy.Port,
-			UpstreamTimeoutMS: config.Proxy.UpstreamTimeoutMS,
-			ForwardHeaders:    config.Proxy.ForwardHeaders,
+			Upstream:            config.Proxy.Upstream,
+			BindAddress:         config.Proxy.BindAddress,
+			Port:                config.Proxy.Port,
+			UpstreamTimeoutMS:   config.Proxy.UpstreamTimeoutMS,
+			ForwardHeaders:      config.Proxy.ForwardHeaders,
+			MaxRequestBodyBytes: config.Proxy.HTTP.MaxRequestBodyBytes,
+			MaxHeaderBytes:      config.Proxy.HTTP.MaxHeaderBytes,
+			ReadHeaderTimeout:   config.Proxy.HTTP.ReadHeaderTimeout,
+			ReadTimeout:         config.Proxy.HTTP.ReadTimeout,
+			WriteTimeout:        config.Proxy.HTTP.WriteTimeout,
+			IdleTimeout:         config.Proxy.HTTP.IdleTimeout,
+			AllowedOrigins:      config.Proxy.HTTP.AllowedOrigins,
+			AllowedHosts:        config.Proxy.HTTP.AllowedHosts,
+			Authenticator:       authenticator,
+			ServerTLS: proxy.HTTPServerTLSConfig{
+				Enabled:  config.Proxy.TLS.Enabled,
+				CertFile: config.Proxy.TLS.CertFile,
+				KeyFile:  config.Proxy.TLS.KeyFile,
+			},
 			TLS: httpclient.TLSConfig{
 				CAFile:             config.Proxy.TLS.CAFile,
 				ServerName:         config.Proxy.TLS.ServerName,
@@ -273,7 +358,7 @@ func main() {
 			logger.Error("failed to create http proxy", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("http proxy listening", "port", config.Proxy.Port, "upstream", config.Proxy.Upstream)
+		logger.Info("http proxy listening", "bind_address", config.Proxy.BindAddress, "port", config.Proxy.Port, "tls", config.Proxy.TLS.Enabled, "upstream", config.Proxy.Upstream)
 		err = httpProxy.ListenAndServe(ctx)
 	default:
 		err = fmt.Errorf("main: unknown transport %q", config.Proxy.Transport)
@@ -360,7 +445,20 @@ func loadConfig(flags cliFlags) (appConfig, error) {
 	if err := v.Unmarshal(&config); err != nil {
 		return appConfig{}, fmt.Errorf("main: decode config: %w", err)
 	}
+	if token := os.Getenv("MCP_AUDIT_STATIC_BEARER_TOKEN"); token != "" {
+		config.Auth.Static.BearerToken = token
+	}
+	resolveSigningSecret(&config)
 	return config, validateConfig(config)
+}
+
+func resolveSigningSecret(config *appConfig) {
+	if legacySecret := os.Getenv(legacySigningSecretEnv); legacySecret != "" {
+		config.Audit.Secret = legacySecret
+	}
+	if preferredSecret, configured := os.LookupEnv(preferredSigningSecretEnv); configured {
+		config.Audit.Secret = preferredSecret
+	}
 }
 
 func dashboardConfigFromApp(config appConfig, store audit.Store, logger *slog.Logger) dashboard.Config {
@@ -378,10 +476,22 @@ func dashboardConfigFromApp(config appConfig, store audit.Store, logger *slog.Lo
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.transport", "stdio")
+	v.SetDefault("proxy.bind_address", "")
 	v.SetDefault("proxy.port", 4422)
 	v.SetDefault("proxy.upstream_timeout_ms", proxy.DefaultHTTPUpstreamTimeoutMS)
 	v.SetDefault("proxy.forward_headers", []string{})
+	v.SetDefault("proxy.http.max_request_body_bytes", proxy.DefaultHTTPMaxRequestBodyBytes)
+	v.SetDefault("proxy.http.max_header_bytes", proxy.DefaultHTTPMaxHeaderBytes)
+	v.SetDefault("proxy.http.read_header_timeout", proxy.DefaultHTTPReadHeaderTimeout)
+	v.SetDefault("proxy.http.read_timeout", proxy.DefaultHTTPReadTimeout)
+	v.SetDefault("proxy.http.write_timeout", proxy.DefaultHTTPWriteTimeout)
+	v.SetDefault("proxy.http.idle_timeout", proxy.DefaultHTTPIdleTimeout)
+	v.SetDefault("proxy.http.allowed_origins", []string{})
+	v.SetDefault("proxy.http.allowed_hosts", []string{})
 	v.SetDefault("proxy.tls.ca_file", "")
+	v.SetDefault("proxy.tls.enabled", false)
+	v.SetDefault("proxy.tls.cert_file", "")
+	v.SetDefault("proxy.tls.key_file", "")
 	v.SetDefault("proxy.tls.server_name", "")
 	v.SetDefault("proxy.tls.insecure_skip_verify", false)
 	v.SetDefault("proxy.tls.client_cert_file", "")
@@ -391,10 +501,28 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("proxy.retry.max_interval_ms", 2000)
 	v.SetDefault("proxy.client_id", "claude-desktop")
 	v.SetDefault("proxy.server_id", "filesystem")
+	v.SetDefault("auth.mode", auth.ModeNone)
+	v.SetDefault("auth.static.bearer_token", "")
+	v.SetDefault("auth.static.subject", "local")
+	v.SetDefault("auth.static.client_id", "")
+	v.SetDefault("auth.static.issuer", "static")
+	v.SetDefault("auth.static.roles", []string{})
+	v.SetDefault("auth.static.scopes", []string{})
+	v.SetDefault("auth.oidc.issuer", "")
+	v.SetDefault("auth.oidc.audience", "")
+	v.SetDefault("auth.oidc.jwks_uri", "")
+	v.SetDefault("auth.oidc.client_id_claim", "client_id")
+	v.SetDefault("auth.oidc.roles_claim", "roles")
+	v.SetDefault("auth.oidc.scopes_claim", "scope")
+	v.SetDefault("auth.oidc.allowed_methods", []string{"RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "EdDSA"})
+	v.SetDefault("auth.oidc.clock_skew", 30*time.Second)
+	v.SetDefault("auth.oidc.http_timeout", 5*time.Second)
+	v.SetDefault("auth.oidc.refresh_interval", 5*time.Minute)
 	v.SetDefault("audit.storage", "jsonl")
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
 	v.SetDefault("audit.sign", true)
+	v.SetDefault("audit.signing.key_id", auditintegrity.DefaultKeyID)
 	v.SetDefault("audit.async.enabled", false)
 	v.SetDefault("audit.async.queue_size", 4096)
 	v.SetDefault("audit.async.batch_size", 128)
@@ -409,6 +537,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("middleware.redact.patterns", middleware.DefaultRedactPatterns)
 	v.SetDefault("policy.enabled", false)
 	v.SetDefault("policy.default_action", policy.ActionAllow)
+	v.SetDefault("policy.scope", policy.ScopeToolsOnly)
 	v.SetDefault("policy.rules", []policy.Rule{})
 	v.SetDefault("dashboard.enabled", true)
 	v.SetDefault("dashboard.bind_address", dashboard.DefaultBindAddress)
@@ -472,6 +601,24 @@ func validateConfig(config appConfig) error {
 	if config.Proxy.Transport == "http" && config.Proxy.UpstreamTimeoutMS <= 0 {
 		return fmt.Errorf("main: proxy.upstream_timeout_ms must be > 0")
 	}
+	if config.Proxy.Transport == "http" {
+		if strings.TrimSpace(config.Proxy.BindAddress) != config.Proxy.BindAddress || strings.ContainsFunc(config.Proxy.BindAddress, unicode.IsSpace) {
+			return fmt.Errorf("main: proxy.bind_address must not contain whitespace")
+		}
+		if config.Proxy.HTTP.MaxRequestBodyBytes <= 0 {
+			return fmt.Errorf("main: proxy.http.max_request_body_bytes must be > 0")
+		}
+		if config.Proxy.HTTP.MaxHeaderBytes <= 0 {
+			return fmt.Errorf("main: proxy.http.max_header_bytes must be > 0")
+		}
+		if config.Proxy.HTTP.ReadHeaderTimeout <= 0 || config.Proxy.HTTP.ReadTimeout <= 0 ||
+			config.Proxy.HTTP.WriteTimeout <= 0 || config.Proxy.HTTP.IdleTimeout <= 0 {
+			return fmt.Errorf("main: proxy.http timeouts must be > 0")
+		}
+		if err := proxy.ValidateHTTPAccessLists(config.Proxy.HTTP.AllowedOrigins, config.Proxy.HTTP.AllowedHosts); err != nil {
+			return fmt.Errorf("main: %w", err)
+		}
+	}
 	if config.Proxy.Retry.MaxRetries < 0 {
 		return fmt.Errorf("main: proxy.retry.max_retries must be >= 0")
 	}
@@ -480,6 +627,18 @@ func validateConfig(config appConfig) error {
 	}
 	if (config.Proxy.TLS.ClientCertFile == "") != (config.Proxy.TLS.ClientKeyFile == "") {
 		return fmt.Errorf("main: proxy.tls.client_cert_file and proxy.tls.client_key_file must be configured together")
+	}
+	if config.Proxy.TLS.Enabled && config.Proxy.Transport != "http" {
+		return fmt.Errorf("main: proxy.tls.enabled requires proxy.transport=http")
+	}
+	if config.Proxy.TLS.Enabled && (config.Proxy.TLS.CertFile == "" || config.Proxy.TLS.KeyFile == "") {
+		return fmt.Errorf("main: proxy.tls.cert_file and proxy.tls.key_file are required when incoming TLS is enabled")
+	}
+	if !config.Proxy.TLS.Enabled && (config.Proxy.TLS.CertFile != "" || config.Proxy.TLS.KeyFile != "") {
+		return fmt.Errorf("main: proxy.tls.cert_file and proxy.tls.key_file require proxy.tls.enabled=true")
+	}
+	if err := validateAuthConfig(config); err != nil {
+		return err
 	}
 	if config.Metrics.Path == "" || !strings.HasPrefix(config.Metrics.Path, "/") {
 		return fmt.Errorf("main: metrics.path must start with /")
@@ -510,6 +669,13 @@ func validateConfig(config appConfig) error {
 	default:
 		return fmt.Errorf("main: audit.storage must be jsonl or sqlite")
 	}
+	if keyID := config.Audit.Signing.KeyID; config.Audit.Sign &&
+		(strings.TrimSpace(keyID) == "" || strings.ContainsFunc(keyID, unicode.IsSpace)) {
+		return fmt.Errorf("main: audit.signing.key_id must be non-empty and contain no whitespace")
+	}
+	if config.Audit.Sign && strings.TrimSpace(config.Audit.Secret) == "" {
+		return fmt.Errorf("main: audit signing is enabled but no signing secret is configured")
+	}
 	if config.Audit.Rotation.MaxSizeBytes < 0 {
 		return fmt.Errorf("main: audit.rotation.max_size_bytes must be >= 0")
 	}
@@ -528,6 +694,121 @@ func validateConfig(config appConfig) error {
 		return fmt.Errorf("main: audit.rotation is only supported with jsonl storage")
 	}
 	return nil
+}
+
+func validateAuthConfig(config appConfig) error {
+	switch config.Auth.Mode {
+	case auth.ModeNone:
+		if err := validateStaticPrincipal(config); err != nil {
+			return err
+		}
+		if config.Auth.Static.BearerToken != "" {
+			return fmt.Errorf("main: auth.static.bearer_token requires auth.mode=static_bearer")
+		}
+	case auth.ModeStaticBearer:
+		if err := validateStaticPrincipal(config); err != nil {
+			return err
+		}
+		if config.Proxy.Transport != "http" {
+			return fmt.Errorf("main: auth.mode=static_bearer requires proxy.transport=http")
+		}
+		if len(config.Auth.Static.BearerToken) < 32 {
+			return fmt.Errorf("main: auth.static.bearer_token must be at least 32 bytes")
+		}
+	case auth.ModeOIDC:
+		if config.Proxy.Transport != "http" {
+			return fmt.Errorf("main: auth.mode=oidc requires proxy.transport=http")
+		}
+		if err := validateOIDCConfig(config); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("main: auth.mode must be none, static_bearer, or oidc")
+	}
+	return nil
+}
+
+func validateStaticPrincipal(config appConfig) error {
+	clientID := config.Auth.Static.ClientID
+	if clientID == "" {
+		clientID = config.Proxy.ClientID
+	}
+	if config.Auth.Static.Subject == "" || clientID == "" {
+		return fmt.Errorf("main: auth.static.subject and client_id are required")
+	}
+	return nil
+}
+
+func validateOIDCConfig(config appConfig) error {
+	oidc := config.Auth.OIDC
+	if oidc.Issuer == "" || oidc.Audience == "" || oidc.JWKSURI == "" {
+		return fmt.Errorf("main: auth.oidc.issuer, audience, and jwks_uri are required")
+	}
+	issuer, err := url.Parse(oidc.Issuer)
+	if err != nil || issuer.Hostname() == "" || (issuer.Scheme != "https" && issuer.Scheme != "http") || issuer.User != nil || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return fmt.Errorf("main: auth.oidc.issuer must be an absolute HTTP(S) URL without userinfo, query, or fragment")
+	}
+	if issuer.Scheme == "http" && issuer.Hostname() != "localhost" && issuer.Hostname() != "127.0.0.1" && issuer.Hostname() != "::1" {
+		return fmt.Errorf("main: auth.oidc.issuer must use HTTPS except on loopback")
+	}
+	parsed, err := url.Parse(oidc.JWKSURI)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.Fragment != "" {
+		return fmt.Errorf("main: auth.oidc.jwks_uri must be an absolute HTTP(S) URL without userinfo or fragment")
+	}
+	if parsed.Scheme == "http" && parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+		return fmt.Errorf("main: auth.oidc.jwks_uri must use HTTPS except on loopback")
+	}
+	if oidc.ClientIDClaim == "" || oidc.RolesClaim == "" || oidc.ScopesClaim == "" {
+		return fmt.Errorf("main: auth.oidc claim names must be non-empty")
+	}
+	if oidc.ClockSkew < 0 || oidc.HTTPTimeout <= 0 || oidc.RefreshInterval <= 0 {
+		return fmt.Errorf("main: auth.oidc clock_skew must be non-negative and timeouts must be positive")
+	}
+	allowed := map[string]struct{}{"RS256": {}, "RS384": {}, "RS512": {}, "ES256": {}, "ES384": {}, "ES512": {}, "EdDSA": {}}
+	if len(oidc.AllowedMethods) == 0 {
+		return fmt.Errorf("main: auth.oidc.allowed_methods must be non-empty")
+	}
+	for _, method := range oidc.AllowedMethods {
+		if _, ok := allowed[method]; !ok {
+			return fmt.Errorf("main: auth.oidc.allowed_methods contains unsupported method %q", method)
+		}
+	}
+	return nil
+}
+
+func newAuthenticator(config appConfig) (auth.Authenticator, error) {
+	clientID := config.Auth.Static.ClientID
+	if clientID == "" {
+		clientID = config.Proxy.ClientID
+	}
+	principal := auth.Principal{
+		Subject:  config.Auth.Static.Subject,
+		ClientID: clientID,
+		Issuer:   config.Auth.Static.Issuer,
+		Roles:    config.Auth.Static.Roles,
+		Scopes:   config.Auth.Static.Scopes,
+	}
+	switch config.Auth.Mode {
+	case auth.ModeNone:
+		return auth.NewNoneAuthenticator(principal)
+	case auth.ModeStaticBearer:
+		return auth.NewStaticBearerAuthenticator(config.Auth.Static.BearerToken, principal)
+	case auth.ModeOIDC:
+		return auth.NewJWTAuthenticator(context.Background(), auth.JWTAuthenticatorConfig{
+			Issuer:          config.Auth.OIDC.Issuer,
+			Audience:        config.Auth.OIDC.Audience,
+			JWKSURI:         config.Auth.OIDC.JWKSURI,
+			ClientIDClaim:   config.Auth.OIDC.ClientIDClaim,
+			RolesClaim:      config.Auth.OIDC.RolesClaim,
+			ScopesClaim:     config.Auth.OIDC.ScopesClaim,
+			AllowedMethods:  config.Auth.OIDC.AllowedMethods,
+			ClockSkew:       config.Auth.OIDC.ClockSkew,
+			HTTPTimeout:     config.Auth.OIDC.HTTPTimeout,
+			RefreshInterval: config.Auth.OIDC.RefreshInterval,
+		})
+	default:
+		return nil, fmt.Errorf("main: unsupported auth mode %q", config.Auth.Mode)
+	}
 }
 
 func rotationConfigured(config appConfig) bool {
@@ -557,14 +838,19 @@ func validateForwardHeaders(headers []string) error {
 }
 
 func newPolicy(config appConfig) (*policy.Engine, error) {
+	engine, err := policy.NewEngine(policy.Config{
+		Enabled:       config.Policy.Enabled,
+		DefaultAction: config.Policy.DefaultAction,
+		Scope:         config.Policy.Scope,
+		Rules:         config.Policy.Rules,
+	})
+	if err != nil {
+		return nil, err
+	}
 	if !config.Policy.Enabled {
 		return nil, nil
 	}
-	return policy.NewEngine(policy.Config{
-		Enabled:       config.Policy.Enabled,
-		DefaultAction: config.Policy.DefaultAction,
-		Rules:         config.Policy.Rules,
-	})
+	return engine, nil
 }
 
 func newMetrics(config appConfig, logger *slog.Logger) (metrics.Recorder, *metrics.PrometheusRecorder, error) {

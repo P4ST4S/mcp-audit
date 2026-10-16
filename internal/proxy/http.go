@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,7 +19,9 @@ import (
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/P4ST4S/mcp-audit/internal/auth"
 	"github.com/P4ST4S/mcp-audit/internal/httpclient"
+	"github.com/P4ST4S/mcp-audit/internal/mcp"
 	"github.com/P4ST4S/mcp-audit/internal/middleware"
 	"github.com/P4ST4S/mcp-audit/internal/policy"
 	"github.com/P4ST4S/mcp-audit/internal/retry"
@@ -25,6 +29,15 @@ import (
 
 // DefaultHTTPUpstreamTimeoutMS is the default timeout for HTTP upstream requests.
 const DefaultHTTPUpstreamTimeoutMS = 30000
+
+const (
+	DefaultHTTPMaxRequestBodyBytes = int64(10 * 1024 * 1024)
+	DefaultHTTPMaxHeaderBytes      = 1024 * 1024
+	DefaultHTTPReadHeaderTimeout   = 10 * time.Second
+	DefaultHTTPReadTimeout         = 30 * time.Second
+	DefaultHTTPWriteTimeout        = 30 * time.Second
+	DefaultHTTPIdleTimeout         = 120 * time.Second
+)
 
 const (
 	defaultHTTPRetryInitialIntervalMS = 200
@@ -38,22 +51,40 @@ type HTTPRetryConfig struct {
 	MaxIntervalMS     int
 }
 
+// HTTPServerTLSConfig configures TLS for incoming proxy connections.
+type HTTPServerTLSConfig struct {
+	Enabled  bool
+	CertFile string
+	KeyFile  string
+}
+
 // HTTPConfig configures an HTTP MCP proxy.
 type HTTPConfig struct {
-	Upstream string
-	Port     int
+	Upstream    string
+	BindAddress string
+	Port        int
 	// UpstreamTimeoutMS bounds each HTTP request to the upstream MCP server.
-	UpstreamTimeoutMS int
-	ForwardHeaders    []string
-	TLS               httpclient.TLSConfig
-	Retry             HTTPRetryConfig
-	Audit             *audit.Logger
-	Limiter           *middleware.RateLimiter
-	Policy            *policy.Engine
-	Log               *slog.Logger
-	ClientID          string
-	ServerID          string
-	Metrics           proxyMetrics
+	UpstreamTimeoutMS   int
+	ForwardHeaders      []string
+	MaxRequestBodyBytes int64
+	MaxHeaderBytes      int
+	ReadHeaderTimeout   time.Duration
+	ReadTimeout         time.Duration
+	WriteTimeout        time.Duration
+	IdleTimeout         time.Duration
+	AllowedOrigins      []string
+	AllowedHosts        []string
+	Authenticator       auth.Authenticator
+	ServerTLS           HTTPServerTLSConfig
+	TLS                 httpclient.TLSConfig
+	Retry               HTTPRetryConfig
+	Audit               *audit.Logger
+	Limiter             *middleware.RateLimiter
+	Policy              *policy.Engine
+	Log                 *slog.Logger
+	ClientID            string
+	ServerID            string
+	Metrics             proxyMetrics
 }
 
 // HTTPProxy is an HTTP reverse proxy with JSON-RPC auditing.
@@ -63,6 +94,9 @@ type HTTPProxy struct {
 	client         *http.Client
 	log            *slog.Logger
 	forwardHeaders map[string]struct{}
+	allowedOrigins map[string]struct{}
+	allowedHosts   map[string]struct{}
+	serverTLS      *tls.Config
 }
 
 // NewHTTPProxy creates an HTTP proxy.
@@ -81,8 +115,40 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if config.UpstreamTimeoutMS <= 0 {
 		config.UpstreamTimeoutMS = DefaultHTTPUpstreamTimeoutMS
 	}
+	if config.MaxRequestBodyBytes <= 0 {
+		config.MaxRequestBodyBytes = DefaultHTTPMaxRequestBodyBytes
+	}
+	if config.MaxHeaderBytes <= 0 {
+		config.MaxHeaderBytes = DefaultHTTPMaxHeaderBytes
+	}
+	if config.ReadHeaderTimeout <= 0 {
+		config.ReadHeaderTimeout = DefaultHTTPReadHeaderTimeout
+	}
+	if config.ReadTimeout <= 0 {
+		config.ReadTimeout = DefaultHTTPReadTimeout
+	}
+	if config.WriteTimeout <= 0 {
+		config.WriteTimeout = DefaultHTTPWriteTimeout
+	}
+	if config.IdleTimeout <= 0 {
+		config.IdleTimeout = DefaultHTTPIdleTimeout
+	}
 	if config.Retry.MaxRetries < 0 {
 		config.Retry.MaxRetries = 0
+	}
+	if config.Authenticator == nil {
+		localClientID := config.ClientID
+		if localClientID == "" {
+			localClientID = "legacy-local"
+		}
+		config.Authenticator, err = auth.NewNoneAuthenticator(auth.Principal{
+			Subject:  localClientID,
+			ClientID: localClientID,
+			Issuer:   "static",
+		})
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: default authenticator: %w", err)
+		}
 	}
 	if config.Retry.InitialIntervalMS <= 0 {
 		config.Retry.InitialIntervalMS = defaultHTTPRetryInitialIntervalMS
@@ -100,25 +166,43 @@ func NewHTTPProxy(config HTTPConfig) (*HTTPProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("proxy: http: upstream client: %w", err)
 	}
+	allowedOrigins, err := normalizedAllowedOrigins(config.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	allowedHosts, err := normalizedAllowedHosts(config.AllowedHosts)
+	if err != nil {
+		return nil, err
+	}
+	serverTLS, err := newHTTPServerTLSConfig(config.ServerTLS)
+	if err != nil {
+		return nil, err
+	}
 	return &HTTPProxy{
 		config:         config,
 		upstream:       upstream,
 		client:         client,
 		log:            logger,
 		forwardHeaders: normalizedForwardHeaders(config.ForwardHeaders),
+		allowedOrigins: allowedOrigins,
+		allowedHosts:   allowedHosts,
+		serverTLS:      serverTLS,
 	}, nil
 }
 
 // ListenAndServe starts the HTTP proxy server.
 func (p *HTTPProxy) ListenAndServe(ctx context.Context) error {
-	server := &http.Server{
-		Addr:              fmt.Sprintf(":%d", p.config.Port),
-		Handler:           p,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	server := p.httpServer()
+
 	errs := make(chan error, 1)
 	go func() {
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if p.serverTLS == nil {
+			err = server.ListenAndServe()
+		} else {
+			err = server.ListenAndServeTLS("", "")
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errs <- err
 			return
 		}
@@ -141,19 +225,82 @@ func (p *HTTPProxy) ListenAndServe(ctx context.Context) error {
 	}
 }
 
+func (p *HTTPProxy) httpServer() *http.Server {
+	return &http.Server{
+		Addr:              net.JoinHostPort(p.config.BindAddress, strconv.Itoa(p.config.Port)),
+		Handler:           p,
+		MaxHeaderBytes:    p.config.MaxHeaderBytes,
+		ReadHeaderTimeout: p.config.ReadHeaderTimeout,
+		ReadTimeout:       p.config.ReadTimeout,
+		WriteTimeout:      p.config.WriteTimeout,
+		IdleTimeout:       p.config.IdleTimeout,
+		TLSConfig:         p.serverTLS,
+	}
+}
+
+func newHTTPServerTLSConfig(config HTTPServerTLSConfig) (*tls.Config, error) {
+	if !config.Enabled {
+		if config.CertFile != "" || config.KeyFile != "" {
+			return nil, fmt.Errorf("proxy: http: incoming TLS certificate requires tls.enabled=true")
+		}
+		return nil, nil
+	}
+	if config.CertFile == "" || config.KeyFile == "" {
+		return nil, fmt.Errorf("proxy: http: tls.cert_file and tls.key_file are required when TLS is enabled")
+	}
+	certificate, err := tls.LoadX509KeyPair(config.CertFile, config.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("proxy: http: load incoming TLS certificate: %w", err)
+	}
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{certificate},
+	}, nil
+}
+
 // ServeHTTP forwards a request to the upstream server and audits JSON-RPC messages.
 func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if !p.hostAllowed(r.Host) {
+		p.rejectHTTPRequest(w, http.StatusForbidden, "host", "host is not allowed")
+		return
+	}
+	if !p.originAllowed(r.Header.Get("Origin")) {
+		p.rejectHTTPRequest(w, http.StatusForbidden, "origin", "origin is not allowed")
+		return
+	}
+	principal, err := p.config.Authenticator.Authenticate(r.Context(), r)
+	if err != nil {
+		p.rejectAuthentication(w)
+		return
+	}
+	if principal == nil {
+		http.Error(w, "authentication failed", http.StatusInternalServerError)
+		p.log.Error("authenticator returned a nil principal")
+		return
+	}
+	r = r.WithContext(auth.WithPrincipal(r.Context(), principal))
 	startedAt := time.Now()
+	r.Body = http.MaxBytesReader(w, r.Body, p.config.MaxRequestBodyBytes)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			p.rejectHTTPRequest(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body is too large")
+			return
+		}
 		http.Error(w, "failed to read request", http.StatusBadRequest)
 		p.log.Error("failed to read request body", "error", err)
 		return
 	}
 	_ = r.Body.Close()
+	if err := p.validateMCPRequest(r.Header, body); err != nil {
+		p.writeMCPMetadataError(w, body, err)
+		return
+	}
 
-	pending, reject := p.observeHTTPRequest(body, startedAt)
+	pending, reject := p.observeHTTPRequest(body, startedAt, principal)
 	if reject != nil {
+		p.finalizeHTTPPending(pending, audit.OutcomeCancelled, audit.DirectionClientToServer)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(reject)
@@ -162,6 +309,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.doUpstreamRequest(r, body)
 	if err != nil {
+		p.finalizeHTTPPending(pending, httpFailureOutcome(r.Context(), err), audit.DirectionServerToClient)
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		p.log.Error("upstream request failed", "error", err)
 		return
@@ -171,19 +319,64 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	copyHeader(w.Header(), resp.Header)
 	if isEventStream(resp.Header.Get("Content-Type")) {
 		w.WriteHeader(resp.StatusCode)
-		p.streamSSE(w, resp.Body, pending)
+		p.streamSSE(r.Context(), w, resp.Body, pending, resp.StatusCode)
 		return
 	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		p.finalizeHTTPPending(pending, httpFailureOutcome(r.Context(), err), audit.DirectionServerToClient)
 		http.Error(w, "failed to read upstream response", http.StatusBadGateway)
 		p.log.Error("failed to read upstream response", "error", err)
 		return
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = w.Write(respBody)
-	p.observeHTTPResponse(respBody, pending)
+	if _, err := w.Write(respBody); err != nil {
+		p.finalizeHTTPPending(pending, audit.OutcomeClientDisconnect, audit.DirectionServerToClient)
+		p.log.Warn("failed to write response to client", "error", err)
+		return
+	}
+	p.observeHTTPResponse(respBody, pending, resp.StatusCode)
+	p.finalizeHTTPRemainder(pending, resp.StatusCode)
+}
+
+func (p *HTTPProxy) rejectAuthentication(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="mcp-audit"`)
+	p.rejectHTTPRequest(w, http.StatusUnauthorized, "authentication", "authentication required")
+}
+
+func (p *HTTPProxy) validateMCPRequest(headers http.Header, body []byte) error {
+	metadata, err := mcp.InspectRequest(headers, body)
+	if err != nil {
+		if !hasMCPMetadataHeaders(headers) {
+			p.log.Debug("request is not inspectable MCP JSON-RPC", "error", err)
+			return nil
+		}
+		return err
+	}
+	if metadata.ProtocolRevision == mcp.Protocol20260728 {
+		p.log.Debug("inspected MCP 2026 request", "method", metadata.Method, "name", metadata.Name, "request_id", metadata.RequestID)
+	}
+	return nil
+}
+
+func (p *HTTPProxy) writeMCPMetadataError(w http.ResponseWriter, body []byte, cause error) {
+	p.log.Warn("rejected inconsistent MCP request metadata", "error", cause)
+	id := json.RawMessage("null")
+	if messages, err := mcp.DecodeMessages(body); err == nil && len(messages) == 1 && len(messages[0].ID) > 0 {
+		id = messages[0].ID
+	}
+	rpcErr := &audit.RPCError{Code: -32600, Message: "invalid MCP request metadata"}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusBadRequest)
+	_, _ = w.Write(buildErrorResponse(id, rpcErr))
+}
+
+func hasMCPMetadataHeaders(headers http.Header) bool {
+	return len(headers.Values(mcp.HeaderMethod)) > 0 ||
+		len(headers.Values(mcp.HeaderName)) > 0 ||
+		len(headers.Values(mcp.HeaderProtocolVersion)) > 0
 }
 
 func (p *HTTPProxy) doUpstreamRequest(r *http.Request, body []byte) (*http.Response, error) {
@@ -294,7 +487,7 @@ func (p *HTTPProxy) targetURL(r *http.Request) *url.URL {
 	return &target
 }
 
-func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[string]pendingCall, []byte) {
+func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time, principal *auth.Principal) (map[string]pendingCall, []byte) {
 	pending := make(map[string]pendingCall)
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return pending, nil
@@ -308,31 +501,27 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 		if msg.Method == "" {
 			continue
 		}
-		toolName := toolNameFromParams(msg.Method, msg.Params)
-		call := pendingCall{
-			method:    msg.Method,
-			requestID: jsonRPCID(msg.ID),
-			toolName:  toolName,
-			params:    msg.Params,
-			startedAt: startedAt,
+		metadata := mcp.MetadataFromMessage(mcp.Message{ID: msg.ID, Method: msg.Method, Params: msg.Params})
+		clientID := p.config.ClientID
+		if principal != nil && principal.ClientID != "" {
+			clientID = principal.ClientID
 		}
-		if msg.Method == "tools/call" {
-			decision := p.evaluatePolicy(toolName)
-			p.recordPolicyDecision(decision)
-			if !decision.Allowed {
-				rpcErr := policyError(decision)
-				if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
-					p.log.Error("failed to audit policy denied http call", "error", err)
-				}
-				return pending, buildErrorResponse(msg.ID, rpcErr)
+		decision := p.evaluatePolicy(principal, metadata.Method, metadata.Name)
+		call := p.newPendingCall(msg.Method, jsonRPCID(msg.ID), metadata.Name, msg.Params, len(msg.ID) > 0, startedAt, clientID, auditPrincipal(principal), auditPolicyEvidence(decision))
+		p.recordPolicyDecision(decision)
+		if !decision.Allowed {
+			rpcErr := policyError(decision)
+			if err := p.record(call, audit.OutcomeDenied, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+				p.log.Error("failed to audit policy denied http operation", "error", err)
 			}
+			return pending, buildErrorResponse(msg.ID, rpcErr)
 		}
-		if msg.Method == "tools/call" && !p.config.Limiter.Allow(p.config.ClientID, toolName) {
+		if msg.Method == "tools/call" && !p.config.Limiter.Allow(principal.ClientID, metadata.Name) {
 			if p.config.Metrics != nil {
-				p.config.Metrics.RecordRateLimitRejection(p.config.ClientID, toolName)
+				p.config.Metrics.RecordRateLimitRejection(principal.ClientID, metadata.Name)
 			}
 			rpcErr := &audit.RPCError{Code: -32029, Message: "rate limit exceeded"}
-			if err := p.record(call, audit.DirectionClientToServer, nil, rpcErr); err != nil {
+			if err := p.record(call, audit.OutcomeRateLimited, audit.DirectionClientToServer, nil, rpcErr); err != nil {
 				p.log.Error("failed to audit rate limited http call", "error", err)
 			}
 			return pending, buildErrorResponse(msg.ID, rpcErr)
@@ -341,48 +530,60 @@ func (p *HTTPProxy) observeHTTPRequest(raw []byte, startedAt time.Time) (map[str
 			pending[string(msg.ID)] = call
 			continue
 		}
-		if err := p.record(call, audit.DirectionClientToServer, nil, nil); err != nil {
-			p.log.Error("failed to audit http notification", "error", err)
+		if call.operation != nil {
+			pending["notification:"+call.operation.ID()] = call
 		}
 	}
 	return pending, nil
 }
 
-func (p *HTTPProxy) observeHTTPResponse(raw []byte, pending map[string]pendingCall) {
+func (p *HTTPProxy) observeHTTPResponse(raw []byte, pending map[string]pendingCall, statusCode int) bool {
 	if len(pending) == 0 || len(bytes.TrimSpace(raw)) == 0 {
-		return
+		return true
 	}
 	messages, err := decodeMessages(raw)
 	if err != nil {
 		p.log.Warn("failed to inspect http response", "error", err)
-		return
+		return false
 	}
 	for _, msg := range messages {
 		call, ok := pending[string(msg.ID)]
 		if !ok {
 			continue
 		}
-		if err := p.record(call, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
+		outcome := outcomeForRPCError(msg.Error)
+		if statusCode >= http.StatusBadRequest {
+			outcome = audit.OutcomeUpstreamError
+		}
+		if err := p.record(call, outcome, audit.DirectionServerToClient, msg.Result, msg.Error); err != nil {
 			p.log.Error("failed to audit http response", "error", err)
 		}
 		delete(pending, string(msg.ID))
 	}
+	return true
 }
 
-func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map[string]pendingCall) {
+func (p *HTTPProxy) streamSSE(ctx context.Context, w http.ResponseWriter, body io.Reader, pending map[string]pendingCall, statusCode int) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReader(body)
 	var data strings.Builder
 	for {
 		lineBytes, err := reader.ReadBytes('\n')
 		if len(lineBytes) > 0 {
-			_, _ = w.Write(lineBytes)
+			if _, writeErr := w.Write(lineBytes); writeErr != nil {
+				p.finalizeHTTPPending(pending, audit.OutcomeClientDisconnect, audit.DirectionServerToClient)
+				p.log.Warn("failed to stream response to client", "error", writeErr)
+				return
+			}
 		}
 		if flusher != nil {
 			flusher.Flush()
 		}
 		if len(lineBytes) == 0 && err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			} else {
+				p.finalizeHTTPPending(pending, httpFailureOutcome(ctx, err), audit.DirectionServerToClient)
 				p.log.Error("failed to stream SSE response", "error", err)
 			}
 			return
@@ -392,11 +593,16 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 		}
 		if line == "" && data.Len() > 0 {
-			p.observeHTTPResponse([]byte(data.String()), pending)
+			if !p.observeHTTPResponse([]byte(data.String()), pending, statusCode) {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			}
 			data.Reset()
 		}
 		if err != nil {
-			if err != io.EOF {
+			if err == io.EOF {
+				p.finalizeHTTPRemainder(pending, statusCode)
+			} else {
+				p.finalizeHTTPPending(pending, httpFailureOutcome(ctx, err), audit.DirectionServerToClient)
 				p.log.Error("failed to stream SSE response", "error", err)
 			}
 			return
@@ -404,34 +610,105 @@ func (p *HTTPProxy) streamSSE(w http.ResponseWriter, body io.Reader, pending map
 	}
 }
 
-func (p *HTTPProxy) record(call pendingCall, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
-	return p.config.Audit.Record(audit.Entry{
-		Direction:  direction,
-		Method:     call.method,
-		RequestID:  call.requestID,
-		ToolName:   call.toolName,
-		Params:     call.params,
-		Result:     result,
-		Error:      rpcErr,
-		DurationMs: time.Since(call.startedAt).Milliseconds(),
-		ClientID:   p.config.ClientID,
-		ServerID:   p.config.ServerID,
+func (p *HTTPProxy) finalizeHTTPRemainder(pending map[string]pendingCall, statusCode int) {
+	for id, call := range pending {
+		outcome := audit.OutcomeMalformedUpstreamResponse
+		direction := audit.DirectionServerToClient
+		if statusCode >= http.StatusBadRequest {
+			outcome = audit.OutcomeUpstreamError
+		} else if !call.expectsResponse {
+			outcome = audit.OutcomeSuccess
+			direction = audit.DirectionClientToServer
+		}
+		if err := p.record(call, outcome, direction, nil, nil); err != nil {
+			p.log.Error("failed to finalize http audit operation", "outcome", outcome, "error", err)
+		}
+		delete(pending, id)
+	}
+}
+
+func (p *HTTPProxy) finalizeHTTPPending(pending map[string]pendingCall, outcome audit.Outcome, direction string) {
+	for id, call := range pending {
+		if err := p.record(call, outcome, direction, nil, nil); err != nil {
+			p.log.Error("failed to finalize incomplete http audit operation", "outcome", outcome, "error", err)
+		}
+		delete(pending, id)
+	}
+}
+
+func httpFailureOutcome(ctx context.Context, err error) audit.Outcome {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return audit.OutcomeTimeout
+	}
+	if errors.Is(err, context.Canceled) {
+		if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+			return audit.OutcomeClientDisconnect
+		}
+		return audit.OutcomeCancelled
+	}
+	return audit.OutcomeUpstreamError
+}
+
+func (p *HTTPProxy) newPendingCall(method, requestID, mcpName string, params json.RawMessage, expectsResponse bool, startedAt time.Time, clientID string, principal *audit.Principal, policyEvidence *audit.PolicyEvidence) pendingCall {
+	if principal == nil {
+		principal = staticAuditPrincipal(clientID)
+	}
+	toolName := ""
+	if method == "tools/call" {
+		toolName = mcpName
+	}
+	operation, err := audit.NewOperation(p.config.Audit, audit.Entry{
+		Method:    method,
+		RequestID: requestID,
+		MCPName:   mcpName,
+		ToolName:  toolName,
+		Params:    params,
+		ClientID:  clientID,
+		ServerID:  p.config.ServerID,
+		Principal: principal,
+		Policy:    policyEvidence,
+	}, startedAt)
+	if err != nil {
+		p.log.Error("failed to start audit operation", "method", method, "error", err)
+	}
+	return pendingCall{operation: operation, startedAt: startedAt, expectsResponse: expectsResponse}
+}
+
+func (p *HTTPProxy) record(call pendingCall, outcome audit.Outcome, direction string, result json.RawMessage, rpcErr *audit.RPCError) error {
+	if call.operation == nil {
+		return fmt.Errorf("proxy: http: audit operation unavailable")
+	}
+	return call.operation.Finalize(audit.Completion{
+		Outcome:   outcome,
+		Direction: direction,
+		Result:    result,
+		Error:     rpcErr,
 	})
 }
 
-func (p *HTTPProxy) evaluatePolicy(toolName string) policy.Decision {
+func (p *HTTPProxy) evaluatePolicy(principal *auth.Principal, method, name string) policy.Decision {
 	if p.config.Policy == nil {
 		return policy.Decision{Allowed: true, Action: policy.ActionAllow, RuleIndex: -1}
 	}
+	toolName := ""
+	if method == "tools/call" {
+		toolName = name
+	}
 	return p.config.Policy.Evaluate(policy.Request{
-		ClientID: p.config.ClientID,
+		Subject:  principal.Subject,
+		ClientID: principal.ClientID,
+		Issuer:   principal.Issuer,
+		Roles:    principal.Roles,
+		Scopes:   principal.Scopes,
 		ServerID: p.config.ServerID,
+		Method:   method,
+		Name:     name,
 		ToolName: toolName,
 	})
 }
 
 func (p *HTTPProxy) recordPolicyDecision(decision policy.Decision) {
-	if p.config.Policy == nil || p.config.Metrics == nil {
+	if p.config.Policy == nil || p.config.Metrics == nil || !decision.Applied {
 		return
 	}
 	p.config.Metrics.RecordPolicyDecision(decision.Action)
@@ -497,6 +774,135 @@ func normalizedForwardHeaders(headers []string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func normalizedAllowedOrigins(origins []string) (map[string]struct{}, error) {
+	normalized := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		value, err := normalizeOrigin(origin)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: allowed origin %q: %w", origin, err)
+		}
+		normalized[value] = struct{}{}
+	}
+	return normalized, nil
+}
+
+// ValidateHTTPAccessLists validates configured browser origins and Host values.
+func ValidateHTTPAccessLists(origins, hosts []string) error {
+	if _, err := normalizedAllowedOrigins(origins); err != nil {
+		return err
+	}
+	if _, err := normalizedAllowedHosts(hosts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func normalizeOrigin(origin string) (string, error) {
+	if origin == "" || strings.TrimSpace(origin) != origin {
+		return "", fmt.Errorf("must be a non-empty origin")
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return "", fmt.Errorf("parse: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("scheme must be http or https")
+	}
+	if parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("must contain only scheme and authority")
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if hostname == "" {
+		return "", fmt.Errorf("hostname is required")
+	}
+	if strings.Contains(hostname, ":") && net.ParseIP(hostname) == nil {
+		return "", fmt.Errorf("invalid IPv6 hostname")
+	}
+	port := parsed.Port()
+	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
+		port = ""
+	}
+	authority := hostname
+	if strings.Contains(hostname, ":") {
+		authority = "[" + hostname + "]"
+	}
+	if port != "" {
+		authority = net.JoinHostPort(hostname, port)
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + authority, nil
+}
+
+func normalizedAllowedHosts(hosts []string) (map[string]struct{}, error) {
+	normalized := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		value, err := normalizeHostname(host)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: http: allowed host %q: %w", host, err)
+		}
+		normalized[value] = struct{}{}
+	}
+	return normalized, nil
+}
+
+func normalizeHostname(host string) (string, error) {
+	if host == "" || strings.TrimSpace(host) != host || strings.ContainsAny(host, "/?#@") {
+		return "", fmt.Errorf("must be a non-empty hostname with optional port")
+	}
+	hostname := host
+	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
+		hostname = parsedHost
+	} else if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		hostname = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	} else if strings.Count(host, ":") == 1 {
+		return "", fmt.Errorf("invalid host and port")
+	}
+	if strings.ContainsAny(hostname, "[]") {
+		return "", fmt.Errorf("invalid hostname brackets")
+	}
+	if strings.HasSuffix(hostname, "..") {
+		return "", fmt.Errorf("invalid hostname")
+	}
+	hostname = strings.ToLower(strings.TrimSuffix(hostname, "."))
+	if hostname == "" || strings.ContainsFunc(hostname, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+		return "", fmt.Errorf("invalid hostname")
+	}
+	if strings.Contains(hostname, ":") && net.ParseIP(hostname) == nil {
+		return "", fmt.Errorf("invalid IPv6 hostname")
+	}
+	return hostname, nil
+}
+
+func (p *HTTPProxy) originAllowed(origin string) bool {
+	if origin == "" || len(p.allowedOrigins) == 0 {
+		return true
+	}
+	normalized, err := normalizeOrigin(origin)
+	if err != nil {
+		return false
+	}
+	_, ok := p.allowedOrigins[normalized]
+	return ok
+}
+
+func (p *HTTPProxy) hostAllowed(host string) bool {
+	if len(p.allowedHosts) == 0 {
+		return true
+	}
+	normalized, err := normalizeHostname(host)
+	if err != nil {
+		return false
+	}
+	_, ok := p.allowedHosts[normalized]
+	return ok
+}
+
+func (p *HTTPProxy) rejectHTTPRequest(w http.ResponseWriter, status int, reason, message string) {
+	if recorder, ok := p.config.Metrics.(interface{ RecordHTTPRequestRejection(string) }); ok {
+		recorder.RecordHTTPRequestRejection(reason)
+	}
+	http.Error(w, message, status)
 }
 
 func joinURLPath(basePath, requestPath string) string {
