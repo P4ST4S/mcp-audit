@@ -30,7 +30,8 @@ func verifyJSONLPath(path string, verifier entryVerifier) (Result, error) {
 		if len(raw) == 0 {
 			continue
 		}
-		if _, err := jcs.Transform(raw); err != nil {
+		canonical, err := jcs.Transform(raw)
+		if err != nil {
 			result.malformed(lineNumber, fmt.Errorf("invalid or ambiguous JSON: %w", err))
 			continue
 		}
@@ -40,6 +41,9 @@ func verifyJSONLPath(path string, verifier entryVerifier) (Result, error) {
 			continue
 		}
 		result.record(entry, verifier)
+		if verifier.digest != nil {
+			verifier.digest.add(canonical)
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		return result, fmt.Errorf("audit: verify: scan JSONL: %w", err)

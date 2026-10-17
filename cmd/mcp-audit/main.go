@@ -195,6 +195,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "verify" {
 		os.Exit(runVerifyCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
+	if len(os.Args) > 1 && os.Args[1] == "checkpoint" {
+		os.Exit(runCheckpointCommand(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	flags := parseFlags()
 	if flags.version {
 		fmt.Println(versionString())

@@ -123,3 +123,69 @@ func writeCommandTestJSONL(t *testing.T, entry audit.Entry) string {
 	}
 	return path
 }
+
+func TestCheckpointCommandRoundTripAndExclusiveOutput(t *testing.T) {
+	const secret = "checkpoint command test secret"
+	t.Setenv("MCP_AUDIT_SIGNING_SECRET", secret)
+	entry := commandTestEntry("checkpoint")
+	entry.Integrity, _ = integrity.NewSigner(secret, integrity.DefaultKeyID).Sign(audit.IntegrityEntryV2(entry))
+	path := writeCommandTestJSONL(t, entry)
+	output := filepath.Join(t.TempDir(), "checkpoint.json")
+	var stdout, stderr bytes.Buffer
+	if code := runCheckpointCommand([]string{path, "--output", output, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("create: %d %s", code, &stderr)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := runVerifyCommand([]string{path, "--checkpoint", output, "--json"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("verify: %d %s", code, &stderr)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{path, output} {
+		if code := runCheckpointCommand([]string{path, "--output", target}, &stdout, &stderr); code != 2 {
+			t.Fatalf("overwritten existing file: %s", target)
+		}
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatal("source modified")
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runVerifyCommand([]string{path, "--checkpoint", output}, &stdout, &stderr); code != 1 {
+		t.Fatalf("empty checkpoint evidence exit=%d", code)
+	}
+}
+
+func TestStrictCommandRejectsLegacyAndEmpty(t *testing.T) {
+	t.Setenv("MCP_AUDIT_SIGNING_SECRET", "strict test secret")
+	entry := commandTestEntry("legacy")
+	entry.Signature = audit.NewSigner("strict test secret").Sign(entry)
+	path := writeCommandTestJSONL(t, entry)
+	var stdout, stderr bytes.Buffer
+	if code := runVerifyCommand([]string{path, "--require-integrity-v2"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("legacy exit=%d", code)
+	}
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := runVerifyCommand([]string{path, "--require-integrity-v2"}, &stdout, &stderr); code != 1 {
+		t.Fatalf("empty exit=%d", code)
+	}
+}
+
+func TestCheckpointInputRejectsAmbiguousUnknownAndOversizeJSON(t *testing.T) {
+	for _, raw := range []string{`{"version":1,"version":2}`, `{"unknown":1}`, strings.Repeat(" ", 65537)} {
+		path := filepath.Join(t.TempDir(), "checkpoint.json")
+		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCheckpoint(path); err == nil {
+			t.Fatal("invalid checkpoint input accepted")
+		}
+	}
+}

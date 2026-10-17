@@ -31,8 +31,7 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
   `tools_only`; `all_operations` opts into enforcement for every MCP method.
 - The incoming TLS keys `proxy.tls.enabled`, `proxy.tls.cert_file`, and `proxy.tls.key_file` are part of the stable configuration surface.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`, `audit.rotation.interval`, `audit.rotation.max_age_days`) are part of the stable configuration surface.
-
-`audit.durable` is additive in v1.3 and defaults to `false`.
+- `audit.durable` is additive in v1.3 and defaults to `false`.
 
 ### CLI flags
 
@@ -42,6 +41,14 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - The `verify` command accepts JSONL and SQLite audit artifacts. Its text counter
   names, JSON result fields, and exit statuses (`0` verified, `1` invalid or
   unsigned evidence, `2` usage or input failure) are stable.
+- In v1.3, `verify --require-integrity-v2` rejects legacy-only and empty
+  artifacts; `verify --checkpoint FILE` also requires the expected signed
+  snapshot. A policy/checkpoint mismatch returns `1`; per-entry counters still
+  describe the entries examined and `first_error` describes the mismatch.
+- `checkpoint <artifact> --output FILE` creates a versioned signed checkpoint
+  without overwriting an existing output. It returns `0` on success and `2`
+  for usage, source-policy, input, or output failures. Its v1 format and
+  algorithm are documented in `docs/AUDIT_INTEGRITY.md`.
 
 ### Audit entry JSON schema
 

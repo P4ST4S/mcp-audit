@@ -11,6 +11,7 @@ import (
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
 	"github.com/P4ST4S/mcp-audit/internal/audit/integrity"
+	"github.com/gowebpki/jcs"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,6 +66,17 @@ func verifySQLitePath(path string, verifier entryVerifier) (Result, error) {
 			continue
 		}
 		result.record(entry, verifier)
+		if verifier.digest != nil {
+			raw, err := json.Marshal(entry)
+			if err != nil {
+				return result, fmt.Errorf("audit: verify: marshal checkpoint record: %w", err)
+			}
+			canonical, err := jcs.Transform(raw)
+			if err != nil {
+				return result, fmt.Errorf("audit: verify: canonicalize checkpoint record: %w", err)
+			}
+			verifier.digest.add(canonical)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return result, fmt.Errorf("audit: verify: iterate SQLite: %w", err)
