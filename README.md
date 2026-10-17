@@ -198,7 +198,7 @@ body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
 | `audit.sign` | `true` | Enable HMAC-SHA256 signatures. Startup fails unless a non-blank secret is configured. |
 | `audit.secret` | empty | HMAC secret. Prefer `MCP_AUDIT_SIGNING_SECRET`. |
 | `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
-| `audit.durable` | `false` | Wait for a storage durability barrier before acknowledging an audit, including with async batching. See [durability limits](docs/V1.3_MIGRATION.md). |
+| `audit.durable` | `false` | Wait for a storage durability barrier before acknowledging an audit, including with async batching. See [durability and checkpoint limits](docs/V1.3_MIGRATION.md). |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |
@@ -352,6 +352,24 @@ counts. Exit status `0` means every record has a valid Integrity v2 or legacy
 signature, `1` means at least one record is invalid or unsigned, and `2` means
 the command or artifact could not be read. `--json` emits the same result with
 the total count and first verification error for automation.
+
+For v2-only evidence, use `mcp-audit verify audit.jsonl --require-integrity-v2`.
+This rejects legacy-only entries and empty artifacts. The default command keeps
+legacy compatibility; individual signatures alone do not prove completeness.
+
+To detect deleted, duplicated, or reordered entries in a closed snapshot:
+
+```bash
+mcp-audit checkpoint audit.jsonl --output audit.checkpoint.json
+# Store this expected checkpoint separately, with controlled access.
+mcp-audit verify audit.jsonl --checkpoint /trusted/audit.checkpoint.json
+```
+
+Both commands use `MCP_AUDIT_SIGNING_SECRET` (or legacy `AUDIT_SECRET`) and
+accept `--key-id`. A checkpoint requires nonempty, valid Integrity v2 evidence;
+verification implicitly requires v2. The same commands work with SQLite. See
+the [v1.3 migration guide](docs/V1.3_MIGRATION.md) for storage, backup, and trust
+requirements.
 
 ## Claude Desktop
 

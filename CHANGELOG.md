@@ -8,6 +8,11 @@ All notable changes to mcp-audit are documented in this file.
 
 - Opt-in `audit.durable` acknowledgement: JSONL syncs completed batches and
   SQLite commits with FULL synchronous mode, including through async storage.
+- `verify --require-integrity-v2` for nonempty v2-only audit evidence, preserving
+  legacy verification by default.
+- Signed ordered snapshot checkpoints with `checkpoint --output` and
+  `verify --checkpoint`, detecting changes relative to a separately retained
+  trusted checkpoint.
 
 ### Fixed
 
@@ -23,8 +28,8 @@ All notable changes to mcp-audit are documented in this file.
 ### Documentation
 
 - Describe conditional storage acknowledgement, fail-open transport behavior,
-  and crash/retention limits. Audit finalization does not guarantee unconditional
-  exactly-once durable storage.
+  crash/retention limits, and the separate checkpoint trust requirement. Audit
+  finalization does not guarantee unconditional exactly-once durable storage.
 
 ## [1.2.1] - 2026-10-17
 

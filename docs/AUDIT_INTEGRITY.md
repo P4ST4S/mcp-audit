@@ -66,6 +66,44 @@ field and an explicit JSON `null` are distinct inputs.
 Redaction and default field population happen before both signatures are
 computed. The durable entry is therefore exactly what Integrity v2 verifies.
 
+Individual signatures authenticate the protected content of each present entry.
+They do not establish that every expected entry is present, or its position in
+the stream. Default verification accepts valid legacy signatures for historical
+compatibility; `verify --require-integrity-v2` requires v2 on every entry and
+rejects an empty artifact.
+
+## Ordered snapshot checkpoint v1 (v1.3)
+
+`mcp-audit checkpoint <artifact> --output <new-file>` verifies a nonempty v2
+snapshot and writes a JSON object with `version` (`1`), `algorithm`
+(`hmac-sha256/sha256`), `key_id`, `format` (`jsonl` or `sqlite`), `records`,
+`digest`, and `signature`. Existing output files are never overwritten. The
+signing secret and key ID are supplied as for `verify`.
+
+The lowercase hexadecimal SHA-256 digest covers each record, in order, as its
+8-byte unsigned big-endian canonical byte length followed by RFC 8785 JCS
+bytes. JSONL covers complete JSON objects, including extra fields, and ignores
+blank lines and insignificant whitespace. SQLite covers the defined audit
+fields decoded from rows ordered by `rowid`, rather than database pages, schema,
+or unrelated columns. Checkpoints are specific to their storage format.
+
+The lowercase hexadecimal HMAC-SHA256 signature covers the ASCII domain
+`mcp-audit/checkpoint/v1` followed by a newline, then the JCS representation of
+all checkpoint fields except `signature`. Existing entry signatures and their
+protected field sets are unchanged.
+
+`verify --checkpoint FILE` validates that signature, then compares the complete
+ordered snapshot digest and record count. It also requires every entry to pass
+v2 verification. Missing, inserted, duplicated, reordered or changed records
+fail verification relative to that expected checkpoint.
+
+Create checkpoints from closed or quiescent snapshots, then retain the expected
+checkpoint/version in a separately controlled location. An attacker who can
+replace both inputs with an older valid pair can roll back evidence undetected;
+a holder of the HMAC secret can forge both. This is a whole-artifact checkpoint,
+not a Merkle inclusion proof or an automatic checkpoint of a live/rotated stream.
+It cannot prove that an operation which never reached storage occurred.
+
 ## Key identification
 
 `audit.signing.key_id` defaults to `default` and is copied into every Integrity

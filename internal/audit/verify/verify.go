@@ -19,23 +19,27 @@ const (
 
 // Result summarizes verification outcomes for one evidence artifact.
 type Result struct {
-	Verified   int    `json:"verified"`
-	Invalid    int    `json:"invalid"`
-	Legacy     int    `json:"legacy"`
-	Unsigned   int    `json:"unsigned"`
-	Total      int    `json:"total"`
-	FirstError string `json:"first_error,omitempty"`
+	Verified     int    `json:"verified"`
+	Invalid      int    `json:"invalid"`
+	Legacy       int    `json:"legacy"`
+	Unsigned     int    `json:"unsigned"`
+	Total        int    `json:"total"`
+	FirstError   string `json:"first_error,omitempty"`
+	policyFailed bool
 }
 
 // Clean reports whether every record was cryptographically verified.
 func (r Result) Clean() bool {
-	return r.Invalid == 0 && r.Unsigned == 0
+	return r.Invalid == 0 && r.Unsigned == 0 && !r.policyFailed
 }
 
 // Config supplies verification keys and input format.
 type Config struct {
-	Format Format
-	Keys   map[string]string
+	Format             Format
+	Keys               map[string]string
+	RequireIntegrityV2 bool
+	Checkpoint         *Checkpoint
+	digest             *orderedDigest
 }
 
 // Format is an evidence storage format.
@@ -52,19 +56,44 @@ func VerifyPath(path string, config Config) (Result, error) {
 		format = detected
 	}
 	verifier := newEntryVerifier(config.Keys)
+	verifier.requireV2 = config.RequireIntegrityV2 || config.Checkpoint != nil
+	verifier.digest = config.digest
+	if config.Checkpoint != nil {
+		verifier.digest = newOrderedDigest()
+	}
+	var result Result
+	var err error
 	switch format {
 	case FormatJSONL:
-		return verifyJSONLPath(path, verifier)
+		result, err = verifyJSONLPath(path, verifier)
 	case FormatSQLite:
-		return verifySQLitePath(path, verifier)
+		result, err = verifySQLitePath(path, verifier)
 	default:
 		return Result{}, fmt.Errorf("audit: verify: unsupported format %q", format)
 	}
+	if err != nil {
+		return result, err
+	}
+	if verifier.requireV2 && result.Total == 0 {
+		result.policyFailed = true
+		result.FirstError = "integrity v2 policy requires a non-empty artifact"
+	}
+	if config.Checkpoint != nil {
+		if err := config.Checkpoint.verify(format, verifier.digest, config.Keys); err != nil {
+			result.policyFailed = true
+			if result.FirstError == "" {
+				result.FirstError = err.Error()
+			}
+		}
+	}
+	return result, nil
 }
 
 type entryVerifier struct {
-	v2     *integrity.Verifier
-	legacy map[string]*audit.Signer
+	v2        *integrity.Verifier
+	legacy    map[string]*audit.Signer
+	requireV2 bool
+	digest    *orderedDigest
 }
 
 func newEntryVerifier(keys map[string]string) entryVerifier {
@@ -81,6 +110,9 @@ func (v entryVerifier) verify(entry audit.Entry) (string, error) {
 			return "invalid", err
 		}
 		return "verified", nil
+	}
+	if v.requireV2 {
+		return "invalid", errors.New("integrity v2 is required")
 	}
 	if entry.Signature == "" {
 		return "unsigned", nil
