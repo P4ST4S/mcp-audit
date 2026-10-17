@@ -2,18 +2,22 @@ package storage
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/P4ST4S/mcp-audit/internal/audit"
+	"github.com/gowebpki/jcs"
 )
 
 const archiveTimestampLayout = "20060102T150405Z"
@@ -27,9 +31,11 @@ type JSONLConfig struct {
 	Interval     string
 	MaxAgeDays   int
 	Log          *slog.Logger
+	Durable      bool
 
-	now    func() time.Time
-	rename func(oldPath, newPath string) error
+	now      func() time.Time
+	rename   func(oldPath, newPath string) error
+	syncFile func(*os.File) error
 }
 
 // JSONLStore appends audit entries as one JSON document per line.
@@ -67,6 +73,9 @@ func NewJSONLStoreWithConfig(path string, config JSONLConfig) (*JSONLStore, erro
 	if config.rename == nil {
 		config.rename = os.Rename
 	}
+	if config.syncFile == nil {
+		config.syncFile = (*os.File).Sync
+	}
 	store := &JSONLStore{path: path, config: config}
 	if config.Interval != "" {
 		store.nextTimeCutoff = nextRotationCutoff(config.now(), config.Interval)
@@ -84,23 +93,65 @@ func (s *JSONLStore) Append(entry audit.Entry) error {
 
 // AppendBatch writes entries to the JSONL file with a single flush.
 func (s *JSONLStore) AppendBatch(entries []audit.Entry) error {
+	return s.appendBatch(entries, s.config.Durable)
+}
+
+func (s *JSONLStore) appendBatch(entries []audit.Entry, durable bool) error {
 	if len(entries) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.file == nil {
+		return fmt.Errorf("audit: jsonl: append without an open file")
+	}
 
-	activeWasEmpty := s.activeWasEmpty()
+	info, err := s.file.Stat()
+	if err != nil {
+		return fmt.Errorf("audit: jsonl: stat before append: %w", err)
+	}
+	start := info.Size()
+	if durable && start > 0 {
+		var tail [1]byte
+		if _, err := s.file.ReadAt(tail[:], start-1); err != nil {
+			return fmt.Errorf("audit: jsonl: read tail: %w", err)
+		}
+		if tail[0] != '\n' {
+			return fmt.Errorf("audit: jsonl: incomplete existing record; repair evidence before appending")
+		}
+	}
+	activeWasEmpty := start == 0
+	rollback := func(cause error) error {
+		// Reset clears bufio's sticky error only after discarding the failed batch.
+		if err := s.file.Truncate(start); err != nil {
+			return errors.Join(cause, fmt.Errorf("audit: jsonl: rollback partial append: %w", err))
+		}
+		s.writer.Reset(s.file)
+		if durable {
+			if err := s.config.syncFile(s.file); err != nil {
+				return errors.Join(cause, fmt.Errorf("audit: jsonl: sync rollback: %w", err))
+			}
+		}
+		return cause
+	}
 	encoder := json.NewEncoder(s.writer)
 	for _, entry := range entries {
 		if err := encoder.Encode(entry); err != nil {
-			return fmt.Errorf("audit: jsonl: encode: %w", err)
+			return rollback(fmt.Errorf("audit: jsonl: encode: %w", err))
 		}
 	}
 	if err := s.writer.Flush(); err != nil {
-		return fmt.Errorf("audit: jsonl: flush: %w", err)
+		return rollback(fmt.Errorf("audit: jsonl: flush: %w", err))
+	}
+	if durable {
+		if err := s.config.syncFile(s.file); err != nil {
+			return rollback(fmt.Errorf("audit: jsonl: sync: %w", err))
+		}
 	}
 	s.rotateIfNeeded(activeWasEmpty)
+	if durable {
+		return syncDirectory(filepath.Dir(s.path))
+	}
 	return nil
 }
 
@@ -119,8 +170,15 @@ func (s *JSONLStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 }
 
 func (s *JSONLStore) walkEntries(visit func(audit.Entry)) error {
+	return s.walkEntriesMode(visit, false)
+}
+
+func (s *JSONLStore) walkEntriesMode(visit func(audit.Entry), strict bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.writer == nil {
+		return fmt.Errorf("audit: jsonl: query without an open file")
+	}
 
 	if err := s.writer.Flush(); err != nil {
 		return fmt.Errorf("audit: jsonl: flush before query: %w", err)
@@ -138,7 +196,7 @@ func (s *JSONLStore) walkEntries(visit func(audit.Entry)) error {
 			}
 			return fmt.Errorf("audit: jsonl: open query file: %w", err)
 		}
-		if err := scanJSONL(file, visit); err != nil {
+		if err := scanJSONLMode(file, visit, strict); err != nil {
 			_ = file.Close()
 			return err
 		}
@@ -388,11 +446,41 @@ func (s *JSONLStore) logRotationError(operation string, err error) {
 }
 
 func scanJSONL(file *os.File, visit func(audit.Entry)) error {
+	return scanJSONLMode(file, visit, false)
+}
+
+func scanJSONLMode(file *os.File, visit func(audit.Entry), strict bool) error {
+	if strict {
+		info, err := file.Stat()
+		if err != nil {
+			return fmt.Errorf("audit: jsonl: stat evidence: %w", err)
+		}
+		if info.Size() > 0 {
+			var tail [1]byte
+			if _, err := file.ReadAt(tail[:], info.Size()-1); err != nil {
+				return fmt.Errorf("audit: jsonl: read evidence tail: %w", err)
+			}
+			if tail[0] != '\n' {
+				return fmt.Errorf("audit: jsonl: incomplete evidence during identity lookup")
+			}
+		}
+	}
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
+		if strict {
+			if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+				continue
+			}
+			if _, err := jcs.Transform(scanner.Bytes()); err != nil {
+				return fmt.Errorf("audit: jsonl: ambiguous evidence during identity lookup: %w", err)
+			}
+		}
 		var entry audit.Entry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+			if strict {
+				return fmt.Errorf("audit: jsonl: invalid evidence during identity lookup: %w", err)
+			}
 			continue
 		}
 		visit(entry)
@@ -401,4 +489,18 @@ func scanJSONL(file *os.File, visit func(audit.Entry)) error {
 		return fmt.Errorf("audit: jsonl: scan: %w", err)
 	}
 	return nil
+}
+
+func syncDirectory(path string) error {
+	// Windows file Sync does not provide the Unix directory-entry durability barrier.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("audit: jsonl: open directory for sync: %w", err)
+	}
+	syncErr := dir.Sync()
+	closeErr := dir.Close()
+	return errors.Join(syncErr, closeErr)
 }

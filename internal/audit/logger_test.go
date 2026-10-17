@@ -30,6 +30,15 @@ func (s *fakeStore) Query(QueryFilter) ([]Entry, error) { return s.entries, nil 
 func (s *fakeStore) Stats() (Stats, error)              { return Stats{}, nil }
 func (s *fakeStore) Close() error                       { return nil }
 
+func (s *fakeStore) LookupEntry(id string) (Entry, bool, error) {
+	for _, entry := range s.entries {
+		if entry.ID == id {
+			return entry, true, nil
+		}
+	}
+	return Entry{}, false, nil
+}
+
 // fakeRedactor replaces any non-empty payload with `[REDACTED]`. Used to verify
 // the Logger calls Redact on each redactable field.
 type fakeRedactor struct {

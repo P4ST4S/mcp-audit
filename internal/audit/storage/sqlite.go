@@ -3,8 +3,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,11 +31,18 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("audit: sqlite: create directory: %w", err)
 		}
 	}
-	db, err := sql.Open("sqlite", path)
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	dsn := path + separator + "_pragma=" + url.QueryEscape("busy_timeout=1000") + "&_pragma=" + url.QueryEscape("synchronous=FULL")
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("audit: sqlite: open: %w", err)
 	}
 	store := &SQLiteStore{db: db}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 	if err := store.init(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -41,6 +51,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 }
 
 func (s *SQLiteStore) init(ctx context.Context) error {
+	var mode string
+	if err := s.db.QueryRowContext(ctx, `PRAGMA journal_mode=WAL`).Scan(&mode); err != nil {
+		return fmt.Errorf("audit: sqlite: enable WAL: %w", err)
+	}
+	if mode != "wal" && mode != "memory" {
+		return fmt.Errorf("audit: sqlite: WAL unavailable (journal mode %q)", mode)
+	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS audit_entries (
 			id TEXT PRIMARY KEY,
@@ -112,22 +129,47 @@ func (s *SQLiteStore) Append(entry audit.Entry) error {
 }
 
 // AppendBatch writes entries to SQLite in a single transaction.
-func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
+func (s *SQLiteStore) AppendBatch(entries []audit.Entry) (retErr error) {
 	if len(entries) == 0 {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx, err := s.db.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("audit: sqlite: acquire writer: %w", err)
+	}
+	defer conn.Close()
+	// The busy timeout bounds lock waits; batch size must not impose a deadline.
+	tx, err := conn.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("audit: sqlite: begin batch: %w", err)
 	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackErr := tx.Rollback()
+		if errors.Is(rollbackErr, sql.ErrTxDone) {
+			// A failed Commit closes sql.Tx, but SQLite can still have an active transaction.
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Second)
+			defer cleanupCancel()
+			_, rollbackErr = conn.ExecContext(cleanupCtx, "ROLLBACK")
+		}
+		if rollbackErr != nil {
+			// Never return a connection with unknown transaction state to the pool.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			retErr = errors.Join(retErr, fmt.Errorf("audit: sqlite: rollback: %w", rollbackErr))
+		}
+	}()
 	stmt, err := tx.Prepare(`INSERT INTO audit_entries (
 		id, timestamp, audit_operation_id, outcome, direction, transport, method, request_id, mcp_name, tool_name, params, result, error,
 		duration_ms, client_id, server_id, principal, policy, signature, integrity
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		_ = tx.Rollback()
 		return fmt.Errorf("audit: sqlite: prepare batch: %w", err)
 	}
 	defer stmt.Close()
@@ -135,7 +177,6 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 	for _, entry := range entries {
 		errorJSON, err := json.Marshal(entry.Error)
 		if err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("audit: sqlite: marshal rpc error: %w", err)
 		}
 		if entry.Error == nil {
@@ -143,7 +184,6 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		}
 		principalJSON, err := json.Marshal(entry.Principal)
 		if err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("audit: sqlite: marshal principal: %w", err)
 		}
 		if entry.Principal == nil {
@@ -151,7 +191,6 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		}
 		policyJSON, err := json.Marshal(entry.Policy)
 		if err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("audit: sqlite: marshal policy evidence: %w", err)
 		}
 		if entry.Policy == nil {
@@ -159,7 +198,6 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 		}
 		integrityJSON, err := json.Marshal(entry.Integrity)
 		if err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("audit: sqlite: marshal integrity: %w", err)
 		}
 		if entry.Integrity == nil {
@@ -188,13 +226,13 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 			string(integrityJSON),
 		)
 		if err != nil {
-			_ = tx.Rollback()
 			return fmt.Errorf("audit: sqlite: insert: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("audit: sqlite: commit batch: %w", err)
 	}
+	committed = true
 	return nil
 }
 
@@ -239,7 +277,11 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 }
 
 func (s *SQLiteStore) walkEntries(query string, args []any, visit func(audit.Entry)) error {
-	rows, err := s.db.Query(query, args...)
+	return s.walkEntriesContext(context.Background(), query, args, visit)
+}
+
+func (s *SQLiteStore) walkEntriesContext(ctx context.Context, query string, args []any, visit func(audit.Entry)) error {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("audit: sqlite: query: %w", err)
 	}

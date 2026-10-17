@@ -198,6 +198,7 @@ body before forwarding. A mismatch returns HTTP 400 with JSON-RPC code -32600.
 | `audit.sign` | `true` | Enable HMAC-SHA256 signatures. Startup fails unless a non-blank secret is configured. |
 | `audit.secret` | empty | HMAC secret. Prefer `MCP_AUDIT_SIGNING_SECRET`. |
 | `audit.signing.key_id` | `default` | Key identifier stored with Integrity v2 metadata. |
+| `audit.durable` | `false` | Wait for a storage durability barrier before acknowledging an audit, including with async batching. See [durability limits](docs/V1.3_MIGRATION.md). |
 | `audit.async.enabled` | `false` | Enable asynchronous batched audit writes through a bounded ring buffer. |
 | `audit.async.queue_size` | `4096` | Maximum queued audit entries before backpressure blocks writers. |
 | `audit.async.batch_size` | `128` | Maximum entries written per storage batch. |

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ type AsyncConfig struct {
 	QueueSize       int
 	BatchSize       int
 	FlushIntervalMS int
+	Durable         bool
 }
 
 type batchAppender interface {
@@ -41,10 +43,13 @@ type AsyncStore struct {
 	flushRequests chan chan error
 	done          chan struct{}
 	closeOnce     sync.Once
+	closeErr      error
 	closeMu       sync.RWMutex
+	closed        bool
 
 	batchSize     int
 	flushInterval time.Duration
+	durable       bool
 
 	errMu sync.Mutex
 	err   error
@@ -73,6 +78,7 @@ func NewAsyncStoreWithMetrics(store audit.Store, config AsyncConfig, metrics Asy
 		flushRequests: make(chan chan error),
 		done:          make(chan struct{}),
 		batchSize:     config.BatchSize,
+		durable:       config.Durable,
 		flushInterval: time.Duration(config.FlushIntervalMS) * time.Millisecond,
 	}
 	async.updateQueueMetrics()
@@ -90,6 +96,9 @@ func (s *AsyncStore) Append(entry audit.Entry) error {
 	}
 	s.closeMu.RLock()
 	defer s.closeMu.RUnlock()
+	if s.closed {
+		return fmt.Errorf("audit: async: append after close")
+	}
 	// Check done under the read lock so we never send on a closed channel.
 	select {
 	case <-s.done:
@@ -149,18 +158,15 @@ func (s *AsyncStore) Stats() (audit.Stats, error) {
 
 // Close flushes queued entries, stops the worker, and closes the wrapped store.
 func (s *AsyncStore) Close() error {
-	var err error
 	s.closeOnce.Do(func() {
 		s.closeMu.Lock()
+		s.closed = true
 		close(s.entries)
 		s.closeMu.Unlock()
 		<-s.done
-		err = s.currentErr()
-		if closeErr := s.store.Close(); err == nil {
-			err = closeErr
-		}
+		s.closeErr = errors.Join(s.currentErr(), s.store.Close())
 	})
-	return err
+	return s.closeErr
 }
 
 func (s *AsyncStore) run() {
@@ -186,9 +192,9 @@ func (s *AsyncStore) run() {
 			}
 		case reply := <-s.flushRequests:
 			err := s.drainAndFlush(&batch)
+			s.setErr(err)
 			reply <- err
 			if err != nil {
-				s.setErr(err)
 				return
 			}
 		case <-ticker.C:
@@ -201,7 +207,7 @@ func (s *AsyncStore) run() {
 }
 
 func (s *AsyncStore) drainAndFlush(batch *[]audit.Entry) error {
-	for {
+	for remaining := len(s.entries); remaining > 0; remaining-- {
 		select {
 		case entry, ok := <-s.entries:
 			s.updateQueueMetrics()
@@ -218,13 +224,22 @@ func (s *AsyncStore) drainAndFlush(batch *[]audit.Entry) error {
 			return s.writeBatch(batch)
 		}
 	}
+	return s.writeBatch(batch)
 }
 
 func (s *AsyncStore) writeBatch(batch *[]audit.Entry) error {
 	if len(*batch) == 0 {
 		return nil
 	}
-	if store, ok := s.store.(batchAppender); ok {
+	if s.durable {
+		store, ok := s.store.(durableBatchAppender)
+		if !ok {
+			return fmt.Errorf("audit: async: storage does not support durable batches")
+		}
+		if err := store.AppendBatchDurable(*batch); err != nil {
+			return fmt.Errorf("audit: async: durable append batch: %w", err)
+		}
+	} else if store, ok := s.store.(batchAppender); ok {
 		if err := store.AppendBatch(*batch); err != nil {
 			return fmt.Errorf("audit: async: append batch: %w", err)
 		}

@@ -58,6 +58,8 @@ audit:
   path: ./audit.jsonl
   sqlite_path: ./audit.db
   sign: true
+  # Wait for storage confirmation, including when async batching is enabled.
+  durable: false
   # Required when sign is true. Prefer MCP_AUDIT_SIGNING_SECRET in production.
   secret: ""
   signing:
