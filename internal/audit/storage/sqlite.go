@@ -65,6 +65,7 @@ func (s *SQLiteStore) init(ctx context.Context) error {
 			integrity TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_timestamp ON audit_entries(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_audit_entries_time_order ON audit_entries((` + sqliteTimestamp + `))`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_method ON audit_entries(method)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_tool_name ON audit_entries(tool_name)`,
 		`CREATE INDEX IF NOT EXISTS idx_audit_entries_client_id ON audit_entries(client_id)`,
@@ -197,19 +198,53 @@ func (s *SQLiteStore) AppendBatch(entries []audit.Entry) error {
 	return nil
 }
 
+// SQLite timestamps are written in UTC with variable fractional precision. Pad
+// fractions when comparing so whole seconds and nanosecond bounds sort correctly.
+const sqliteTimestamp = "substr(timestamp, 1, 19) || '.' || substr(rtrim(substr(timestamp, 21), 'Z') || '000000000', 1, 9)"
+const sqliteTimeLayout = "2006-01-02T15:04:05.000000000"
+const sqliteEntries = `SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, COALESCE(request_id, ''), COALESCE(mcp_name, ''), tool_name, params, result, error,
+    duration_ms, client_id, server_id, principal, policy, signature, integrity FROM audit_entries`
+
 // Query returns recent entries matching filter.
 func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
-	rows, err := s.db.Query(`SELECT id, timestamp, audit_operation_id, outcome, direction, transport, method, COALESCE(request_id, ''), COALESCE(mcp_name, ''), tool_name, params, result, error,
-		duration_ms, client_id, server_id, principal, policy, signature, integrity
-		FROM audit_entries
-		ORDER BY timestamp DESC
-		LIMIT 10000`)
+	query := sqliteEntries + " WHERE 1=1"
+	var args []any
+	for _, field := range []struct{ column, value string }{
+		{"method", filter.Method}, {"tool_name", filter.ToolName}, {"client_id", filter.ClientID},
+	} {
+		if field.value != "" {
+			query += " AND " + field.column + " = ?"
+			args = append(args, field.value)
+		}
+	}
+	if !filter.From.IsZero() {
+		query += " AND (" + sqliteTimestamp + ") >= ?"
+		args = append(args, filter.From.UTC().Format(sqliteTimeLayout))
+	}
+	if !filter.To.IsZero() {
+		query += " AND (" + sqliteTimestamp + ") <= ?"
+		args = append(args, filter.To.UTC().Format(sqliteTimeLayout))
+	}
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	query += " ORDER BY (" + sqliteTimestamp + ") DESC, rowid ASC LIMIT ?"
+	args = append(args, limit)
+	var entries []audit.Entry
+	if err := s.walkEntries(query, args, func(entry audit.Entry) { entries = append(entries, entry) }); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+func (s *SQLiteStore) walkEntries(query string, args []any, visit func(audit.Entry)) error {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("audit: sqlite: query: %w", err)
+		return fmt.Errorf("audit: sqlite: query: %w", err)
 	}
 	defer rows.Close()
 
-	var entries []audit.Entry
 	for rows.Next() {
 		var entry audit.Entry
 		var timestamp, operationID, outcome, params, result, rpcErr, principal, policyEvidence, integrityJSON sql.NullString
@@ -235,7 +270,7 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			&entry.Signature,
 			&integrityJSON,
 		); err != nil {
-			return nil, fmt.Errorf("audit: sqlite: scan: %w", err)
+			return fmt.Errorf("audit: sqlite: scan: %w", err)
 		}
 		if timestamp.Valid {
 			parsed, err := time.Parse(time.RFC3339Nano, timestamp.String)
@@ -275,26 +310,24 @@ func (s *SQLiteStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 		}
 		if integrityJSON.Valid && integrityJSON.String != "" && integrityJSON.String != "null" {
 			if err := json.Unmarshal([]byte(integrityJSON.String), &entry.Integrity); err != nil {
-				return nil, fmt.Errorf("audit: sqlite: decode integrity: %w", err)
+				return fmt.Errorf("audit: sqlite: decode integrity: %w", err)
 			}
 		}
-		if audit.MatchFilter(entry, filter) {
-			entries = append(entries, entry)
-		}
+		visit(entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("audit: sqlite: rows: %w", err)
+		return fmt.Errorf("audit: sqlite: rows: %w", err)
 	}
-	return audit.LimitNewest(entries, filter.Limit), nil
+	return nil
 }
 
-// Stats returns aggregate dashboard statistics.
+// Stats returns aggregate dashboard statistics over all retained entries.
 func (s *SQLiteStore) Stats() (audit.Stats, error) {
-	entries, err := s.Query(audit.QueryFilter{Limit: 10000})
-	if err != nil {
+	stats := audit.NewStatsAccumulator(time.Now())
+	if err := s.walkEntries(sqliteEntries, nil, stats.Add); err != nil {
 		return audit.Stats{}, fmt.Errorf("audit: sqlite: stats query: %w", err)
 	}
-	return audit.BuildStats(entries), nil
+	return stats.Stats(), nil
 }
 
 // Close closes the SQLite database.
