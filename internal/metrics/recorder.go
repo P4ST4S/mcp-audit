@@ -265,9 +265,9 @@ func (r *PrometheusRecorder) ListenAndServe(ctx context.Context) error {
 }
 
 func (r *PrometheusRecorder) RecordAuditEntry(entry audit.Entry) {
-	status := "ok"
-	if entry.Error != nil {
-		status = "rpc_error"
+	status := entry.FailureType()
+	if status == "" {
+		status = "ok"
 	}
 	r.auditEntries.WithLabelValues(entry.Transport, normalizeDirection(entry.Direction), entry.Method, status).Inc()
 	if r.config.ToolLabels && entry.Method == "tools/call" {

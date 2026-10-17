@@ -378,8 +378,8 @@ func (e *Exporter) spanFromEntry(entry audit.Entry) (otlpSpan, error) {
 	}
 	if entry.Error != nil {
 		span.Status = otlpStatus{Code: statusCodeError, Message: entry.Error.Message}
-	} else if toolResultIsError(entry.Result) {
-		span.Status = otlpStatus{Code: statusCodeError, Message: "tool_error"}
+	} else if failure := entry.FailureType(); failure != "" {
+		span.Status = otlpStatus{Code: statusCodeError, Message: failure}
 	}
 	return span, nil
 }
@@ -424,8 +424,8 @@ func (e *Exporter) attributes(entry audit.Entry) []keyValue {
 			intAttr(attrRPCResponseStatusCode, int64(entry.Error.Code)),
 			stringAttr(attrErrorType, errorType(entry.Error.Code)),
 		)
-	} else if toolResultIsError(entry.Result) {
-		attrs = append(attrs, stringAttr(attrErrorType, "tool_error"))
+	} else if failure := entry.FailureType(); failure != "" {
+		attrs = append(attrs, stringAttr(attrErrorType, failure))
 	}
 	return attrs
 }
@@ -547,19 +547,6 @@ func errorType(code int) string {
 	default:
 		return "jsonrpc_error"
 	}
-}
-
-func toolResultIsError(raw json.RawMessage) bool {
-	if len(raw) == 0 {
-		return false
-	}
-	var result struct {
-		IsError bool `json:"isError"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		return false
-	}
-	return result.IsError
 }
 
 func randomHex(size int) (string, error) {
