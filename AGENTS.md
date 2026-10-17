@@ -4,6 +4,22 @@ Guidance for AI coding agents (Claude Code, Cursor, Codex, Jules, Amp, etc.) con
 
 `mcp-audit` is a security and observability proxy for MCP (Model Context Protocol) servers, written in Go. It records signed audit trails, enforces policies, applies rate limits, and exports OTLP traces + Prometheus metrics. See [README.md](README.md) for what it does and why; this file is about how to work on it.
 
+## Required agent skills
+
+Agents MUST read and apply the following project-local skills whenever their trigger applies. Read the relevant `SKILL.md` before starting that work and follow its referenced guidance as needed; merely listing a skill is not using it.
+
+| Skill | Required when |
+| --- | --- |
+| [`golang-pro`](.agents/skills/golang-pro/SKILL.md) | Writing, changing, or reviewing Go code, including tests. Pay particular attention to error handling, context cancellation, goroutine lifetimes, and race safety. |
+| [`differential-review`](.agents/skills/differential-review/SKILL.md) | Reviewing code changes before reporting them ready for a PR. Inspect affected callers, security boundaries, compatibility, and test coverage; address findings before handoff. Documentation-only and formatting-only changes are exempt. |
+| [`variant-analysis`](.agents/skills/variant-analysis/SKILL.md) | Fixing a confirmed bug or vulnerability. Search for the same root cause across related packages and transports, and report which matches are real. It is not required without a known bug. |
+
+These requirements apply to every agent harness, including tools that do not discover `.agents/skills/` automatically. In that case, explicitly load the files into the agent's context. If a required skill is missing, follow the project-only setup in [CONTRIBUTING.md](CONTRIBUTING.md#using-an-ai-agent-or-harness). If it cannot be loaded, report the blocker rather than claiming the required review is complete.
+
+Repository rules in this file and [STABILITY.md](STABILITY.md) take precedence over generic skill recommendations. In particular, skills do not introduce a new coverage threshold, require adding `golangci-lint`, or justify new abstractions or dependencies on their own. The build, test, and lint commands below remain required for code changes.
+
+At handoff, state which skills were applied, summarize review findings and their resolution, and list checks actually run with their results. Explicitly disclose skipped checks and unresolved issues. Never claim a check passed because a skill was loaded. Keep security findings private per [SECURITY.md](SECURITY.md).
+
 ## Build, test, lint
 
 ```bash

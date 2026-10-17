@@ -21,6 +21,27 @@ go test -tags=integration ./tests/integration/...
 Fuzz targets and campaign commands are documented in
 [`docs/FUZZING.md`](docs/FUZZING.md).
 
+## Using an AI agent or harness
+
+If you contribute with an AI coding agent (Codex, Claude Code, Cursor, or another harness), you MUST have it read [AGENTS.md](AGENTS.md) before working and apply the [required skills](AGENTS.md#required-agent-skills) whenever their triggers apply:
+
+- `golang-pro` for Go implementation, tests, and review.
+- `differential-review` to review code changes before submitting a PR.
+- `variant-analysis` when fixing a confirmed bug or vulnerability, to find related occurrences.
+
+Skills live in `.agents/skills/`. If your harness does not discover them automatically, explicitly load the relevant `SKILL.md` files and their needed references into its context. If they are missing, install them **from the repository root, without `-g`**, using Node.js/npm:
+
+```bash
+npx skills add jeffallan/claude-skills --skill golang-pro --agent codex --yes
+npx skills add trailofbits/skills --skill differential-review variant-analysis --agent codex --yes
+```
+
+For Claude Code, replace `--agent codex` with `--agent claude-code`; for both, use `--agent codex claude-code`. Installation is project-local. Other harnesses can load the files from `.agents/skills/` explicitly.
+
+In the PR description, identify the skills applied, summarize findings and how they were addressed, and report the verification commands actually run and their results. Explain any unavailable skill, skipped check, or unresolved issue. Do not publish vulnerability details; follow [SECURITY.md](SECURITY.md).
+
+You remain responsible for reading and understanding the generated diff, adding meaningful tests, and checking compatibility with [STABILITY.md](STABILITY.md). Skills support this review; they do not replace the checks below or human review. Contributors working without an AI harness follow the same code and test standards without needing to install skills.
+
 ## Before opening a PR
 
 - `go build ./...` passes
