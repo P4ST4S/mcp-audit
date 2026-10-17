@@ -4,6 +4,8 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-17
+
 ### Added
 
 - Opt-in `audit.durable` acknowledgement: JSONL syncs completed batches and
@@ -275,7 +277,8 @@ Without this setting, authenticated upstreams may return `401 Unauthorized`; `mc
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.1...v1.3.0
 [1.2.1]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...v1.1.0

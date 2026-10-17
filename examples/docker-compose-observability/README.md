@@ -2,7 +2,7 @@
 
 Brings up `mcp-audit`, Prometheus, and Grafana with a single command.
 
-This example targets v1.2.1 and builds the repository checkout. Run the commands
+This example targets v1.3.0 and builds the repository checkout. Run the commands
 below from `examples/docker-compose-observability/`.
 
 ## Services

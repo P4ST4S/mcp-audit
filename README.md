@@ -58,8 +58,8 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 For detailed platform-specific instructions and troubleshooting, see
 [INSTALL.md](INSTALL.md).
 
-The current release is **v1.2.1**. See the [changelog](CHANGELOG.md#121---2026-10-17)
-and [migration guide](docs/V1.2_MIGRATION.md) before upgrading.
+The current release is **v1.3.0**. See the [changelog](CHANGELOG.md#130---2026-10-17)
+and [migration guide](docs/V1.3_MIGRATION.md) before upgrading.
 
 Download the latest prebuilt binary and run:
 
