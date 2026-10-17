@@ -32,6 +32,8 @@ The following surfaces are covered by the stability policy starting at `v1.0.0`:
 - The incoming TLS keys `proxy.tls.enabled`, `proxy.tls.cert_file`, and `proxy.tls.key_file` are part of the stable configuration surface.
 - The JSONL rotation keys (`audit.rotation.max_size_bytes`, `audit.rotation.max_files`, `audit.rotation.interval`, `audit.rotation.max_age_days`) are part of the stable configuration surface.
 
+`audit.durable` is additive in v1.3 and defaults to `false`.
+
 ### CLI flags
 
 - Existing flags keep their meaning and accepted values.

@@ -4,6 +4,28 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `audit.durable` acknowledgement: JSONL syncs completed batches and
+  SQLite commits with FULL synchronous mode, including through async storage.
+
+### Fixed
+
+- SQLite uses WAL and a per-connection busy timeout so dashboard readers do not
+  block audit commits. Failed transactions are cleaned up before pool reuse.
+- Failed JSONL batches roll back partial output and clear the buffered writer's
+  error before retry. Durable appends reject an incomplete existing tail.
+- Terminal finalization freezes record identity and signatures across bounded
+  audit retries and reconciles uncertain writes before appending again.
+- Async shutdown rejects new entries while closing and preserves storage errors
+  across repeated closes.
+
+### Documentation
+
+- Describe conditional storage acknowledgement, fail-open transport behavior,
+  and crash/retention limits. Audit finalization does not guarantee unconditional
+  exactly-once durable storage.
+
 ## [1.2.1] - 2026-10-17
 
 ### Fixed

@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -120,6 +121,29 @@ type Store interface {
 	Close() error
 }
 
+// DurableAppender acknowledges an entry only after the backend's durability barrier.
+type DurableAppender interface{ AppendDurable(Entry) error }
+
+// EntryLookup resolves an uncertain append by its stable record ID.
+type EntryLookup interface {
+	LookupEntry(string) (Entry, bool, error)
+}
+
+// Syncer completes the backend's durability barrier for existing records.
+type Syncer interface{ Sync() error }
+
+// EqualEntries compares the complete stored representation, including signatures.
+func EqualEntries(a, b Entry) bool {
+	// SQLite stores UTC; both signature formats already normalize this instant.
+	a.Timestamp, b.Timestamp = a.Timestamp.UTC(), b.Timestamp.UTC()
+	x, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	y, err := json.Marshal(b)
+	return err == nil && bytes.Equal(x, y)
+}
+
 // Redactor redacts sensitive values before entries are stored.
 type Redactor interface {
 	Redact(raw json.RawMessage) json.RawMessage
@@ -147,6 +171,7 @@ type Logger struct {
 	clientID        string
 	serverID        string
 	metrics         MetricsRecorder
+	durable         bool
 }
 
 // LoggerConfig configures a Logger.
@@ -161,6 +186,7 @@ type LoggerConfig struct {
 	ServerID        string
 	Metrics         MetricsRecorder
 	Trace           TraceExporter
+	Durable         bool
 }
 
 // NewLogger creates an audit logger.
@@ -180,11 +206,25 @@ func NewLogger(config LoggerConfig) *Logger {
 		clientID:        config.ClientID,
 		serverID:        config.ServerID,
 		metrics:         config.Metrics,
+		durable:         config.Durable,
 	}
 }
 
 // Record records entry after applying redaction and signing.
 func (l *Logger) Record(entry Entry) error {
+	prepared, err := l.prepare(entry)
+	if err != nil {
+		return err
+	}
+	return l.recordPrepared(prepared, false)
+}
+
+func (l *Logger) prepare(entry Entry) (Entry, error) {
+	entry.Params = cloneRawMessage(entry.Params)
+	entry.Result = cloneRawMessage(entry.Result)
+	entry.Error = cloneRPCError(entry.Error)
+	entry.Principal = clonePrincipal(entry.Principal)
+	entry.Policy = clonePolicyEvidence(entry.Policy)
 	if entry.ID == "" {
 		entry.ID = ulid.Make().String()
 	}
@@ -213,11 +253,48 @@ func (l *Logger) Record(entry Entry) error {
 	if l.integritySigner != nil && l.integritySigner.Enabled() {
 		metadata, err := l.integritySigner.Sign(IntegrityEntryV2(entry))
 		if err != nil {
-			return fmt.Errorf("audit: logger: sign integrity v2: %w", err)
+			return Entry{}, fmt.Errorf("audit: logger: sign integrity v2: %w", err)
 		}
 		entry.Integrity = metadata
 	}
-	if err := l.store.Append(entry); err != nil {
+	return entry, nil
+}
+
+func (l *Logger) recordPrepared(entry Entry, retry bool) error {
+	found := false
+	if retry {
+		if lookup, ok := l.store.(EntryLookup); ok {
+			existing, exists, err := lookup.LookupEntry(entry.ID)
+			if err != nil {
+				return fmt.Errorf("audit: logger: resolve append: %w", err)
+			}
+			if exists && !EqualEntries(existing, entry) {
+				return fmt.Errorf("audit: logger: conflicting record identity")
+			}
+			found = exists
+		} else {
+			return fmt.Errorf("audit: logger: cannot safely retry storage without record lookup")
+		}
+	}
+	var err error
+	if found {
+		if l.durable {
+			if syncer, ok := l.store.(Syncer); ok {
+				err = syncer.Sync()
+			} else {
+				err = fmt.Errorf("storage does not support durable confirmation")
+			}
+		}
+	} else if l.durable {
+		if store, ok := l.store.(DurableAppender); ok {
+			err = store.AppendDurable(entry)
+		} else {
+			err = fmt.Errorf("storage does not support durable appends")
+		}
+	} else {
+		err = l.store.Append(entry)
+	}
+	if err != nil {
 		return fmt.Errorf("audit: logger: append: %w", err)
 	}
 	if l.metrics != nil {

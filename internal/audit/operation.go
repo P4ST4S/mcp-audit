@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,13 +26,16 @@ type Completion struct {
 	Error     *RPCError
 }
 
-// Operation owns the exactly-once terminal audit event for one accepted request.
+// Operation owns one frozen terminal record identity for an accepted request.
 type Operation struct {
-	mu        sync.Mutex
-	logger    *Logger
-	entry     Entry
-	startedAt time.Time
-	finalized bool
+	mu         sync.Mutex
+	logger     *Logger
+	entry      Entry
+	startedAt  time.Time
+	finalized  bool
+	prepared   *Entry
+	completion *Completion
+	attempted  bool
 }
 
 // NewOperation starts an operation and assigns it a UUIDv7 correlation ID.
@@ -68,7 +72,7 @@ func (o *Operation) ID() string {
 	return o.entry.AuditOperationID
 }
 
-// Finalize records the operation's terminal event exactly once.
+// Finalize freezes one terminal record and retries only its audit persistence.
 func (o *Operation) Finalize(completion Completion) error {
 	if o == nil {
 		return fmt.Errorf("audit: operation: nil operation")
@@ -83,20 +87,48 @@ func (o *Operation) Finalize(completion Completion) error {
 		return ErrOperationFinalized
 	}
 
-	entry := o.entry
-	entry.Outcome = completion.Outcome
-	entry.Direction = completion.Direction
-	entry.Result = cloneRawMessage(completion.Result)
-	entry.Error = cloneRPCError(completion.Error)
-	entry.DurationMs = time.Since(o.startedAt).Milliseconds()
-	if entry.DurationMs < 0 {
-		entry.DurationMs = 0
+	if o.prepared == nil {
+		entry := o.entry
+		entry.Outcome = completion.Outcome
+		entry.Direction = completion.Direction
+		entry.Result = cloneRawMessage(completion.Result)
+		entry.Error = cloneRPCError(completion.Error)
+		entry.DurationMs = time.Since(o.startedAt).Milliseconds()
+		if entry.DurationMs < 0 {
+			entry.DurationMs = 0
+		}
+		prepared, err := o.logger.prepare(entry)
+		if err != nil {
+			return err
+		}
+		o.prepared = &prepared
+		frozen := completion
+		frozen.Result = cloneRawMessage(completion.Result)
+		frozen.Error = cloneRPCError(completion.Error)
+		o.completion = &frozen
+	} else if !sameCompletion(*o.completion, completion) {
+		return fmt.Errorf("audit: operation: completion changed after a failed append")
 	}
-	if err := o.logger.Record(entry); err != nil {
-		return err
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = o.logger.recordPrepared(*o.prepared, o.attempted)
+		o.attempted = true
+		if err == nil {
+			o.finalized = true
+			return nil
+		}
 	}
-	o.finalized = true
-	return nil
+	return err
+}
+
+func sameCompletion(a, b Completion) bool {
+	if a.Outcome != b.Outcome || a.Direction != b.Direction || !bytes.Equal(a.Result, b.Result) {
+		return false
+	}
+	if a.Error == nil || b.Error == nil {
+		return a.Error == nil && b.Error == nil
+	}
+	return a.Error.Code == b.Error.Code && a.Error.Message == b.Error.Message && bytes.Equal(a.Error.Data, b.Error.Data)
 }
 
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {

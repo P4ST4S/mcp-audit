@@ -262,6 +262,9 @@ func TestLoadConfigAuditRotationDefaults(t *testing.T) {
 	if config.Audit.Signing.KeyID != "default" {
 		t.Fatalf("signing key ID = %q, want default", config.Audit.Signing.KeyID)
 	}
+	if config.Audit.Durable {
+		t.Fatal("durable mode must be opt-in")
+	}
 }
 
 func TestValidateConfigRejectsInvalidSigningKeyID(t *testing.T) {

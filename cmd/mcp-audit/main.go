@@ -105,6 +105,7 @@ type appConfig struct {
 		Path       string `mapstructure:"path"`
 		SQLitePath string `mapstructure:"sqlite_path"`
 		Sign       bool   `mapstructure:"sign"`
+		Durable    bool   `mapstructure:"durable"`
 		Secret     string `mapstructure:"secret"`
 		Signing    struct {
 			KeyID string `mapstructure:"key_id"`
@@ -257,6 +258,7 @@ func main() {
 		os.Exit(1)
 	}
 	auditLogger := audit.NewLogger(audit.LoggerConfig{
+		Durable:         config.Audit.Durable,
 		Store:           store,
 		Signer:          signer,
 		IntegritySigner: integritySigner,
@@ -522,6 +524,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("audit.path", "./audit.jsonl")
 	v.SetDefault("audit.sqlite_path", "./audit.db")
 	v.SetDefault("audit.sign", true)
+	v.SetDefault("audit.durable", false)
 	v.SetDefault("audit.signing.key_id", auditintegrity.DefaultKeyID)
 	v.SetDefault("audit.async.enabled", false)
 	v.SetDefault("audit.async.queue_size", 4096)
@@ -909,6 +912,7 @@ func openStore(config appConfig, metricsRecorder metrics.Recorder, logger *slog.
 			Interval:     config.Audit.Rotation.Interval,
 			MaxAgeDays:   config.Audit.Rotation.MaxAgeDays,
 			Log:          logger,
+			Durable:      config.Audit.Durable,
 		})
 		if err != nil {
 			return nil, err
@@ -926,6 +930,7 @@ func openStore(config appConfig, metricsRecorder metrics.Recorder, logger *slog.
 	if config.Audit.Async.Enabled {
 		store = storage.NewInstrumentedStore(store, metricsRecorder, backend, "async")
 		store = storage.NewAsyncStoreWithMetrics(store, storage.AsyncConfig{
+			Durable:         config.Audit.Durable,
 			QueueSize:       config.Audit.Async.QueueSize,
 			BatchSize:       config.Audit.Async.BatchSize,
 			FlushIntervalMS: config.Audit.Async.FlushIntervalMS,
