@@ -2,7 +2,7 @@
 
 Brings up `mcp-audit`, Prometheus, and Grafana with a single command.
 
-This example targets v1.2.0 and builds the repository checkout. Run the commands
+This example targets v1.2.1 and builds the repository checkout. Run the commands
 below from `examples/docker-compose-observability/`.
 
 ## Services
@@ -30,8 +30,8 @@ docker compose down   # tear down when done
 - **mcp-audit dashboard** at `http://localhost:9090` — recent audit entries, top tools, error rate.
 - **Prometheus** at `http://localhost:9092` — query `mcp_audit_*` metrics directly.
 - **Grafana** at `http://localhost:3000` — Prometheus datasource is provisioned automatically; create dashboards using metrics such as:
-  - `mcp_audit_entries_total{status="ok|rpc_error"}` — total audit entries by transport, direction, method, and status
-  - `mcp_audit_tool_calls_total{status="ok|rpc_error"}` — tool call count by transport, tool name, and status
+  - `mcp_audit_entries_total` — total audit entries by transport, direction, method, and status
+  - `mcp_audit_tool_calls_total` — tool call count by transport, tool name, and status
   - `mcp_audit_policy_decisions_total{action="allow|deny"}` — policy decisions
   - `mcp_audit_rate_limit_rejections_total` — rate-limited requests by client and tool
   - `mcp_audit_async_queue_depth` — async write queue depth
@@ -49,3 +49,7 @@ docker compose down   # tear down when done
   Export the JSONL artifact with
   `docker compose cp mcp-audit:/data/audit.jsonl ./audit.jsonl`.
   `docker compose down` preserves the volume; adding `-v` deletes it.
+
+Since v1.2.1, terminal transport failures are classified by outcome (for example,
+`timeout` or `upstream_error`) instead of `ok`. Use `status!="ok"` to select all
+failure classes. See the main README for the complete bounded status mapping.
