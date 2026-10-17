@@ -106,17 +106,29 @@ func (s *JSONLStore) AppendBatch(entries []audit.Entry) error {
 
 // Query returns recent entries matching filter.
 func (s *JSONLStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
+	var entries []audit.Entry
+	err := s.walkEntries(func(entry audit.Entry) {
+		if audit.MatchFilter(entry, filter) {
+			entries = append(entries, entry)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	return audit.LimitNewest(entries, filter.Limit), nil
+}
+
+func (s *JSONLStore) walkEntries(visit func(audit.Entry)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if err := s.writer.Flush(); err != nil {
-		return nil, fmt.Errorf("audit: jsonl: flush before query: %w", err)
+		return fmt.Errorf("audit: jsonl: flush before query: %w", err)
 	}
 
-	var entries []audit.Entry
 	paths, err := s.queryPaths()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	for _, path := range paths {
 		file, err := os.Open(path)
@@ -124,27 +136,27 @@ func (s *JSONLStore) Query(filter audit.QueryFilter) ([]audit.Entry, error) {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("audit: jsonl: open query file: %w", err)
+			return fmt.Errorf("audit: jsonl: open query file: %w", err)
 		}
-		if err := scanJSONL(file, filter, &entries); err != nil {
+		if err := scanJSONL(file, visit); err != nil {
 			_ = file.Close()
-			return nil, err
+			return err
 		}
 		if err := file.Close(); err != nil {
-			return nil, fmt.Errorf("audit: jsonl: close query file: %w", err)
+			return fmt.Errorf("audit: jsonl: close query file: %w", err)
 		}
 	}
 
-	return audit.LimitNewest(entries, filter.Limit), nil
+	return nil
 }
 
 // Stats returns aggregate dashboard statistics.
 func (s *JSONLStore) Stats() (audit.Stats, error) {
-	entries, err := s.Query(audit.QueryFilter{Limit: 10000})
-	if err != nil {
+	stats := audit.NewStatsAccumulator(time.Now())
+	if err := s.walkEntries(stats.Add); err != nil {
 		return audit.Stats{}, fmt.Errorf("audit: jsonl: stats query: %w", err)
 	}
-	return audit.BuildStats(entries), nil
+	return stats.Stats(), nil
 }
 
 // Close flushes and closes the JSONL file.
@@ -375,7 +387,7 @@ func (s *JSONLStore) logRotationError(operation string, err error) {
 	}
 }
 
-func scanJSONL(file *os.File, filter audit.QueryFilter, entries *[]audit.Entry) error {
+func scanJSONL(file *os.File, visit func(audit.Entry)) error {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
@@ -383,9 +395,7 @@ func scanJSONL(file *os.File, filter audit.QueryFilter, entries *[]audit.Entry) 
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
 			continue
 		}
-		if audit.MatchFilter(entry, filter) {
-			*entries = append(*entries, entry)
-		}
+		visit(entry)
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("audit: jsonl: scan: %w", err)

@@ -19,13 +19,13 @@ release for reproducible installs, set the `version` shell variable before
 running any snippet:
 
 ```bash
-version=1.2.0
+version=1.2.1
 ```
 
 On PowerShell:
 
 ```powershell
-$version = "1.2.0"
+$version = "1.2.1"
 ```
 
 When `version` is set, snippets below build URLs from it. When `version` is

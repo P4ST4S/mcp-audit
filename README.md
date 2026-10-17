@@ -58,7 +58,7 @@ HTTP upstreams can use custom CA bundles, TLS server name overrides, and optiona
 For detailed platform-specific instructions and troubleshooting, see
 [INSTALL.md](INSTALL.md).
 
-The current release is **v1.2.0**. See the [changelog](CHANGELOG.md#120---2026-10-16)
+The current release is **v1.2.1**. See the [changelog](CHANGELOG.md#121---2026-10-17)
 and [migration guide](docs/V1.2_MIGRATION.md) before upgrading.
 
 Download the latest prebuilt binary and run:
@@ -400,6 +400,16 @@ Missing or invalid credentials return `401 Unauthorized` with `WWW-Authenticate:
 
 Dashboard JSON API responses include `Cache-Control: no-store` so intermediaries and browsers do not retain audit payloads.
 
+Dashboard statistics cover all retained entries (including rotated JSONL files),
+not just the newest 10,000. Terminal operations count once in either transport
+direction; legacy entries count on the client-to-server side. `total_today` uses
+the proxy's local calendar day, while `error_rate` and `top_tools` cover the full
+retained history. Error rates include terminal transport and tool-result errors.
+
+SQLite filters are applied before ordering and limiting, including for older
+records. The first v1.2.1 startup adds a timestamp-order index; on a large database
+this can take additional time and disk space. Existing audit rows are unchanged.
+
 ## Prometheus Metrics
 
 `mcp-audit` exposes Prometheus metrics on a separate endpoint so platform teams can scrape operational data without exposing the dashboard.
@@ -412,6 +422,18 @@ scrape_configs:
 ```
 
 Application metrics use the `mcp_audit_` prefix and avoid unbounded labels. Tool-level labels can be disabled with `metrics.tool_labels: false` for stricter cardinality control. Policy decisions are exposed as `mcp_audit_policy_decisions_total{action="allow|deny"}`.
+
+`mcp_audit_entries_total` and `mcp_audit_tool_calls_total` use `status="ok"`
+for successful entries and `status="rpc_error"` for JSON-RPC errors. Since
+v1.2.1, non-RPC terminal failures use their bounded audit outcome (`timeout`,
+`upstream_error`, `client_disconnect`, `malformed_upstream_response`, `cancelled`,
+`internal_error`, `denied`, or `rate_limited`); MCP results with `isError: true`
+use `tool_error`. JSON-RPC errors retain `rpc_error` even when a failure outcome
+is present. Legacy entries without an outcome retain success/RPC classification,
+with tool-result errors recognized. Metric names and label sets are unchanged.
+For an error ratio, select `status!="ok"` rather than only `rpc_error`.
+OTLP spans use error status and `error.type` for these failures while preserving
+existing JSON-RPC error types.
 
 For a ready-made Prometheus + Grafana stack, see [examples/docker-compose-observability](examples/docker-compose-observability/README.md).
 

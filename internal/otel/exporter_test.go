@@ -759,12 +759,6 @@ func TestNormalizeDirectionDefaultsToUnknown(t *testing.T) {
 	}
 }
 
-func TestToolResultIsErrorIgnoresInvalidJSON(t *testing.T) {
-	if toolResultIsError(json.RawMessage(`not-json`)) {
-		t.Fatal("invalid tool result should not be an error")
-	}
-}
-
 func TestAuditLoggerExportsSpanEndToEnd(t *testing.T) {
 	requests := make(chan []byte, 1)
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {

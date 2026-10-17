@@ -4,6 +4,19 @@ All notable changes to mcp-audit are documented in this file.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-17
+
+### Fixed
+
+- SQLite dashboard searches now apply filters before the requested limit, so
+  matching records older than 10,000 unrelated entries remain discoverable.
+  Timestamp comparisons retain nanosecond precision and inclusive time bounds.
+- Dashboard statistics include the complete retained JSONL/SQLite history and
+  count terminal response-side operations, transport failures, and tool errors.
+- Prometheus counters and OTLP spans classify terminal failures instead of
+  reporting them as successful. Existing metric names/label sets, RPC error
+  classifications, audit fields, and signatures are preserved.
+
 ## [1.2.0] - 2026-10-16
 
 ### Added
@@ -235,7 +248,8 @@ Without this setting, authenticated upstreams may return `401 Unauthorized`; `mc
 - Async write pipeline is not implemented.
 - MCP Streamable HTTP transport is not supported.
 
-[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/P4ST4S/mcp-audit/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/P4ST4S/mcp-audit/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/P4ST4S/mcp-audit/compare/v0.9.0...v1.0.0

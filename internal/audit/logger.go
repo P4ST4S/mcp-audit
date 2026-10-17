@@ -51,6 +51,23 @@ func (o Outcome) Valid() bool {
 	}
 }
 
+// FailureType returns a bounded operational error class, or empty for success.
+func (e Entry) FailureType() string {
+	if e.Error != nil {
+		return "rpc_error"
+	}
+	if e.Outcome.Valid() && e.Outcome != OutcomeSuccess {
+		return string(e.Outcome)
+	}
+	var result struct {
+		IsError bool `json:"isError"`
+	}
+	if json.Unmarshal(e.Result, &result) == nil && result.IsError {
+		return "tool_error"
+	}
+	return ""
+}
+
 // RPCError represents a JSON-RPC error object.
 type RPCError struct {
 	Code    int             `json:"code"`
@@ -326,30 +343,50 @@ func LimitNewest(entries []Entry, limit int) []Entry {
 
 // BuildStats builds dashboard statistics from entries.
 func BuildStats(entries []Entry) Stats {
-	now := time.Now()
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	var today, total, errors int
-	toolCounts := make(map[string]int)
+	stats := NewStatsAccumulator(time.Now())
 	for _, entry := range entries {
-		if entry.Direction != DirectionClientToServer {
-			continue
-		}
-		total++
-		if entry.Error != nil {
-			errors++
-		}
-		if entry.Timestamp.After(start) {
-			today++
-		}
-		if entry.ToolName != "" {
-			toolCounts[entry.ToolName]++
-		}
+		stats.Add(entry)
 	}
-	stats := Stats{TotalToday: today}
-	if total > 0 {
-		stats.ErrorRate = float64(errors) / float64(total)
+	return stats.Stats()
+}
+
+// StatsAccumulator aggregates a stream without retaining audit payloads.
+type StatsAccumulator struct {
+	start, end           time.Time
+	today, total, errors int
+	toolCounts           map[string]int
+}
+
+// NewStatsAccumulator fixes the current local day for a statistics snapshot.
+func NewStatsAccumulator(now time.Time) *StatsAccumulator {
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	return &StatsAccumulator{start: start, end: start.AddDate(0, 0, 1), toolCounts: make(map[string]int)}
+}
+
+// Add includes terminal operations in either direction and legacy request entries.
+func (s *StatsAccumulator) Add(entry Entry) {
+	if entry.Outcome == "" && entry.Direction != DirectionClientToServer {
+		return
 	}
-	for name, count := range toolCounts {
+	s.total++
+	if entry.FailureType() != "" {
+		s.errors++
+	}
+	if !entry.Timestamp.Before(s.start) && entry.Timestamp.Before(s.end) {
+		s.today++
+	}
+	if entry.ToolName != "" {
+		s.toolCounts[entry.ToolName]++
+	}
+}
+
+// Stats returns the aggregate using the stable dashboard response shape.
+func (s *StatsAccumulator) Stats() Stats {
+	stats := Stats{TotalToday: s.today}
+	if s.total > 0 {
+		stats.ErrorRate = float64(s.errors) / float64(s.total)
+	}
+	for name, count := range s.toolCounts {
 		stats.TopTools = append(stats.TopTools, ToolStat{Name: name, Count: count})
 	}
 	sort.Slice(stats.TopTools, func(i, j int) bool {
