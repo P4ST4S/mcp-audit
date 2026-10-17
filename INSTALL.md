@@ -19,13 +19,13 @@ release for reproducible installs, set the `version` shell variable before
 running any snippet:
 
 ```bash
-version=1.2.1
+version=1.3.0
 ```
 
 On PowerShell:
 
 ```powershell
-$version = "1.2.1"
+$version = "1.3.0"
 ```
 
 When `version` is set, snippets below build URLs from it. When `version` is
@@ -35,6 +35,9 @@ When upgrading an existing deployment to v1.2, review the
 [v1.2 migration guide](docs/V1.2_MIGRATION.md) before rollout. It covers the
 fail-closed signing requirement, explicit HTTP exposure, authentication, policy
 scope, and evidence verification.
+
+For v1.3 durability, SQLite WAL backup requirements and signed snapshot
+checkpoints, also read the [v1.3 migration guide](docs/V1.3_MIGRATION.md).
 
 ## Prerequisites
 

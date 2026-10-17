@@ -6,12 +6,12 @@
     "url": "https://github.com/P4ST4S/mcp-audit",
     "source": "github"
   },
-  "version": "1.2.1",
+  "version": "1.3.0",
   "packages": [
     {
       "registryType": "other",
       "identifier": "github.com/P4ST4S/mcp-audit",
-      "version": "v1.2.1",
+      "version": "v1.3.0",
       "transport": {
         "type": "stdio"
       },
