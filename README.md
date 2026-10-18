@@ -574,7 +574,7 @@ field set and compatibility rules.
 
 ## Contributing
 
-Keep changes small, run `go build ./...` and `go vet ./...`, and prefer standard library behavior over new dependencies. Stability guarantees are documented in [STABILITY.md](STABILITY.md).
+Keep changes small, run `make check` (vet, build, and race tests), and prefer standard library behavior over new dependencies. Run `make help` for all development tasks. Stability guarantees are documented in [STABILITY.md](STABILITY.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, PR expectations, and project principles. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
